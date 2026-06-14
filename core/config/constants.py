@@ -1,0 +1,31 @@
+TASK_RAG = "rag"
+TASK_BI = "bi"
+TASK_MEMORY = "memory"
+TASK_GENERAL = "general"
+
+MODEL_QWEN = "qwen3:8b"
+MODEL_LLAMA = "llama3:latest"
+MODEL_MISTRAL = "mistral:latest"
+
+DEFAULT_TASK_MODEL_MAP = {
+    TASK_RAG: MODEL_QWEN,
+    TASK_BI: MODEL_QWEN,
+    TASK_MEMORY: MODEL_LLAMA,
+    TASK_GENERAL: MODEL_MISTRAL,
+}
+
+DEFAULT_CHUNK_SIZE = 500
+DEFAULT_CHUNK_OVERLAP = 100
+DEFAULT_TOP_K = 5
+
+DEFAULT_EMBED_MODEL = "all-MiniLM-L6-v2"
+EMBED_DIM = 384
+
+INDEX_PATH = "data/indexes/faiss.index"
+RAW_DATA_PATH = "data/raw"
+PROCESSED_DATA_PATH = "data/processed"
+CACHE_PATH = "data/cache"
+ANALYTICS_LOG = "data/processed/analytics.jsonl"
+
+MAX_MEMORY_MESSAGES = 20
+MEMORY_TTL_SECONDS = 3600
