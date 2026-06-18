@@ -1,6 +1,9 @@
 import os
 import ipaddress
+import shutil
 import socket
+import subprocess
+import tempfile
 import threading
 from pathlib import Path
 from urllib.parse import urljoin, urlparse
@@ -26,10 +29,11 @@ class IngestionService:
         self.embedder = embedder
         self.store = store
 
-    def ingest_pdf(self, path: str) -> int:
-        with fitz.open(path) as doc:
-            text = "\n".join(page.get_text() for page in doc)
-        return self._ingest_text(text, source=os.path.basename(path))
+    def ingest_pdf(self, path: str, source: str = None) -> int:
+        text = self._extract_pdf_text(path)
+        if not text.strip():
+            text = self._ocr_pdf_to_text(path)
+        return self._ingest_text(text, source=source or os.path.basename(path))
 
     def ingest_url(self, url: str) -> int:
         self._validate_public_url(url)
@@ -67,6 +71,42 @@ class IngestionService:
             self.store.add(vectors[:n], metadata)
             self.store.save()
         return n
+
+    @staticmethod
+    def _extract_pdf_text(path: str) -> str:
+        with fitz.open(path) as doc:
+            return "\n".join(page.get_text() for page in doc)
+
+    @staticmethod
+    def _ocr_pdf_to_text(path: str) -> str:
+        executable = shutil.which("ocrmypdf")
+        if not executable:
+            raise ValueError(
+                "No extractable text found in this PDF, and OCR is not installed in the API container."
+            )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output_path = os.path.join(tmpdir, "ocr.pdf")
+            command = [
+                executable,
+                "--skip-text",
+                "--deskew",
+                "--quiet",
+                path,
+                output_path,
+            ]
+            try:
+                subprocess.run(command, check=True, capture_output=True, text=True, timeout=180)
+            except subprocess.TimeoutExpired as e:
+                raise ValueError("OCR took too long for this PDF. Try a smaller file or fewer pages.") from e
+            except subprocess.CalledProcessError as e:
+                message = (e.stderr or e.stdout or "OCR failed").strip()
+                raise ValueError(f"OCR failed for this PDF: {message}") from e
+
+            text = IngestionService._extract_pdf_text(output_path)
+            if not text.strip():
+                raise ValueError("OCR completed, but no readable text was found in this PDF.")
+            return text
 
     @staticmethod
     def _validate_public_url(url: str):

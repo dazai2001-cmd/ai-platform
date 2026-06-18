@@ -17,7 +17,8 @@ class OllamaClient:
         model: str,
         prompt: str,
         temperature: float = 0.2,
-        max_tokens: Optional[int] = None
+        max_tokens: Optional[int] = None,
+        json_format: bool = False
     ) -> str:
         max_tokens = max_tokens or settings.LLM_MAX_TOKENS
         payload = {
@@ -30,6 +31,8 @@ class OllamaClient:
                 "num_predict": max_tokens,
             },
         }
+        if json_format:
+            payload["format"] = "json"
 
         try:
             r = requests.post(

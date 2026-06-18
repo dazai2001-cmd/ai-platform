@@ -4,10 +4,9 @@ from flask import Blueprint, request, jsonify
 from agents.bi_agent import bi_agent
 from apps.api.deps import save_upload, ALLOWED_DATA
 from apps.api.errors import error_response
-from domain.router.router import QueryRouter
+from core.config.constants import TASK_BI
 
 bi_bp = Blueprint("bi", __name__, url_prefix="/api/bi")
-router = QueryRouter()
 
 
 @bi_bp.post("/upload")
@@ -53,9 +52,8 @@ def ask():
         return jsonify({"error": "question is required"}), 400
 
     try:
-        route = router.route(question)
-        result = bi_agent.ask(question, session_id=session_id, dataset_name=dataset, model=route["model"])
-        result["route"] = route["type"]
+        result = bi_agent.ask(question, session_id=session_id, dataset_name=dataset)
+        result["route"] = TASK_BI
         return jsonify(result)
     except Exception as e:
         return error_response(e, 502)

@@ -11,19 +11,52 @@ body {
   min-height: 100%;
 }
 
+html {
+  color-scheme: dark;
+  scroll-behavior: smooth;
+}
+
 body {
   margin: 0;
-  background: #020617;
-  color: #e2e8f0;
-  font-family: Arial, Helvetica, sans-serif;
+  background:
+    radial-gradient(circle at 18% 0%, rgba(45, 212, 191, 0.12), transparent 28rem),
+    radial-gradient(circle at 88% 10%, rgba(244, 114, 182, 0.07), transparent 24rem),
+    linear-gradient(135deg, #020617 0%, #08111f 48%, #111827 100%);
+  color: #e5eef8;
+  font-family:
+    Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
 }
 
 button,
 input,
-textarea {
+textarea,
+select {
   font: inherit;
+}
+
+button,
+a,
+input,
+textarea,
+select {
+  -webkit-tap-highlight-color: transparent;
+}
+
+button,
+a {
+  touch-action: manipulation;
+}
+
+::selection {
+  background: rgba(45, 212, 191, 0.28);
+  color: #f8fafc;
+}
+
+:focus-visible {
+  outline: 2px solid rgba(45, 212, 191, 0.75);
+  outline-offset: 3px;
 }
 
 ::-webkit-scrollbar {
@@ -38,4 +71,87 @@ textarea {
 ::-webkit-scrollbar-thumb {
   background: #334155;
   border-radius: 999px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #475569;
+}
+
+@layer components {
+  .app-panel {
+    border: 1px solid rgba(51, 65, 85, 0.72);
+    background: rgba(15, 23, 42, 0.72);
+    box-shadow: 0 18px 55px rgba(2, 6, 23, 0.24);
+    backdrop-filter: blur(18px);
+  }
+
+  .app-input {
+    border: 1px solid rgba(51, 65, 85, 0.9);
+    background: rgba(2, 6, 23, 0.52);
+    color: #f8fafc;
+    transition:
+      border-color 160ms ease,
+      box-shadow 160ms ease,
+      background-color 160ms ease;
+  }
+
+  .app-input:hover {
+    border-color: rgba(71, 85, 105, 0.95);
+    background: rgba(15, 23, 42, 0.72);
+  }
+
+  .app-input:focus {
+    border-color: rgba(45, 212, 191, 0.78);
+    box-shadow: 0 0 0 3px rgba(45, 212, 191, 0.13);
+    outline: none;
+  }
+
+  .soft-fade-in {
+    animation: softFadeIn 220ms ease-out both;
+  }
+
+  .streaming-caret::after {
+    display: inline-block;
+    margin-left: 2px;
+    width: 7px;
+    height: 1.05em;
+    border-radius: 999px;
+    background: #67e8f9;
+    content: "";
+    vertical-align: -0.18em;
+    animation: caretBlink 950ms steps(2, start) infinite;
+  }
+}
+
+@keyframes softFadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes caretBlink {
+  0%,
+  42% {
+    opacity: 1;
+  }
+  43%,
+  100% {
+    opacity: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+    animation-duration: 1ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 1ms !important;
+  }
 }

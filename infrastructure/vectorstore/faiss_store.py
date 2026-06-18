@@ -74,6 +74,26 @@ class FAISSStore:
         self.metadata = []
         self.save()
 
+    def delete_by_source(self, source: str) -> int:
+        keep_vectors = []
+        keep_metadata = []
+        deleted = 0
+
+        for idx, meta in enumerate(self.metadata):
+            if meta.get("source") == source:
+                deleted += 1
+                continue
+            if idx < self.index.ntotal:
+                keep_vectors.append(self.index.reconstruct(idx))
+                keep_metadata.append(meta)
+
+        self.index = faiss.IndexFlatL2(self.dim)
+        self.metadata = keep_metadata
+        if keep_vectors:
+            self.index.add(np.asarray(keep_vectors, dtype=np.float32))
+        self.save()
+        return deleted
+
     @property
     def total(self) -> int:
         return self.index.ntotal

@@ -10,6 +10,8 @@ from apps.api.routes.bi import bi_bp
 from apps.api.routes.memory import memory_bp
 from apps.api.routes.health import health_bp
 from apps.api.routes.chat import chat_bp
+from apps.api.routes.career import career_bp
+from apps.api.routes.jobs import jobs_bp
 
 
 def create_app() -> Flask:
@@ -30,7 +32,7 @@ def create_app() -> Flask:
             return jsonify({"error": "unauthorized"}), 401
         return None
 
-    for bp in [rag_bp, bi_bp, memory_bp, health_bp, chat_bp]:
+    for bp in [rag_bp, bi_bp, memory_bp, health_bp, chat_bp, career_bp, jobs_bp]:
         app.register_blueprint(bp)
 
     @app.get("/")

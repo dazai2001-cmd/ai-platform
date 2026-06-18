@@ -1,5 +1,6 @@
 import time
 import uuid
+from collections import Counter
 from infrastructure.embeddings.embedder import get_embedder
 from infrastructure.vectorstore.faiss_store import FAISSStore
 from application.ingestion.ingestion_service import IngestionService
@@ -62,10 +63,10 @@ class RAGAgent:
     def stream_ask(self, question: str, session_id: str = None, model: str = None):
         session_id = session_id or str(uuid.uuid4())
         model = model or settings.TASK_MODELS["rag"]
-        return self.pipeline.stream_ask(question, model=model), session_id
+        return self.pipeline.stream_ask(question, model=model), session_id, model
 
     def ingest_pdf(self, path: str, filename: str) -> int:
-        return self.ingestion.ingest_pdf(path)
+        return self.ingestion.ingest_pdf(path, source=filename)
 
     def ingest_url(self, url: str) -> int:
         return self.ingestion.ingest_url(url)
@@ -78,6 +79,45 @@ class RAGAgent:
             "total_chunks": self.store.total,
             "model": settings.TASK_MODELS["rag"]
         }
+
+    def documents(self) -> list[dict]:
+        counts = Counter(meta.get("source", "unknown") for meta in self.store.metadata)
+        documents = []
+        for source, count in counts.items():
+            matching = [m for m in self.store.metadata if m.get("source", "unknown") == source]
+            first = matching[0] if matching else {}
+            preview = first.get("text", "")[:280]
+            documents.append({
+                "source": source,
+                "title": self._title_for_source(source),
+                "chunks": count,
+                "type": first.get("type", "pdf" if source.lower().endswith(".pdf") else "note"),
+                "preview": preview,
+            })
+        return sorted(documents, key=lambda d: d["title"].lower())
+
+    def document_preview(self, source: str, limit: int = 8) -> dict:
+        chunks = [
+            meta.get("text", "")
+            for meta in self.store.metadata
+            if meta.get("source", "unknown") == source
+        ][:limit]
+        return {
+            "source": source,
+            "title": self._title_for_source(source),
+            "chunks": len(chunks),
+            "text": "\n\n".join(chunks),
+        }
+
+    def delete_document(self, source: str) -> int:
+        return self.store.delete_by_source(source)
+
+    @staticmethod
+    def _title_for_source(source: str) -> str:
+        parts = source.split("_", 1)
+        if len(parts) == 2 and len(parts[0]) == 32:
+            return parts[1]
+        return source
 
 
 rag_agent = RAGAgent()

@@ -50,6 +50,7 @@ class Settings:
     PROCESSED_DATA_PATH = os.getenv("PROCESSED_DATA_PATH", PROCESSED_DATA_PATH)
     UPLOAD_PATH = os.getenv("UPLOAD_PATH", "data/uploads")
     BI_MANIFEST_PATH = os.getenv("BI_MANIFEST_PATH", "data/processed/bi_datasets.json")
+    SQLITE_PATH = os.getenv("SQLITE_PATH", "data/processed/app.db")
 
 
 settings = Settings()

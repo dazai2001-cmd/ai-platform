@@ -29,11 +29,11 @@ class QueryRouter:
         except Exception:
             pass
 
-        return self._with_model({"type": TASK_RAG, "confidence": 0.5, "reasoning": "fallback"})
+        return self._with_model({"type": TASK_GENERAL, "confidence": 0.5, "reasoning": "fallback"})
 
     @staticmethod
     def model_for_type(task_type: str) -> str:
-        return settings.TASK_MODELS.get(task_type, settings.TASK_MODELS[TASK_RAG])
+        return settings.TASK_MODELS.get(task_type, settings.TASK_MODELS[TASK_GENERAL])
 
     def _with_model(self, route: dict) -> dict:
         task_type = route.get("type", TASK_RAG)

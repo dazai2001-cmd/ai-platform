@@ -1,5 +1,7 @@
 import io
 import unittest
+from pathlib import Path
+from unittest.mock import patch
 
 from werkzeug.datastructures import FileStorage
 
@@ -9,6 +11,7 @@ from application.ingestion.chunker import chunk_text
 from domain.bi.pipeline import BIPipeline, _PROMPT
 from domain.router.router import QueryRouter
 from core.config.settings import settings
+from services.career.career_service import CareerService
 
 
 class UploadValidationTests(unittest.TestCase):
@@ -95,11 +98,52 @@ class ModelRoutingTests(unittest.TestCase):
         for task, model in settings.TASK_MODELS.items():
             self.assertEqual(QueryRouter.model_for_type(task), model)
 
-    def test_unknown_task_uses_rag_model(self):
+    def test_unknown_task_uses_general_model(self):
         self.assertEqual(
             QueryRouter.model_for_type("unknown"),
-            settings.TASK_MODELS["rag"],
+            settings.TASK_MODELS["general"],
         )
+
+    def test_career_service_reads_current_task_model(self):
+        original = dict(settings.TASK_MODELS)
+        try:
+            service = CareerService()
+            with patch("services.career.career_service.ollama.generate", return_value='{"fit_score": 80}') as generate:
+                settings.TASK_MODELS["career"] = "mistral:latest"
+                first = service.analyze_fit("TypeScript project", "React role")
+                settings.TASK_MODELS["career"] = "llama3:latest"
+                second = service.analyze_fit("TypeScript project", "React role")
+
+            self.assertEqual(first["model"], "mistral:latest")
+            self.assertEqual(second["model"], "llama3:latest")
+            self.assertEqual(generate.call_args_list[0].args[0], "mistral:latest")
+            self.assertEqual(generate.call_args_list[1].args[0], "llama3:latest")
+        finally:
+            settings.TASK_MODELS.clear()
+            settings.TASK_MODELS.update(original)
+
+
+class ApiRoutingBoundaryTests(unittest.TestCase):
+    root = Path(__file__).parents[1]
+
+    def test_auto_chat_stream_dispatches_by_route_type(self):
+        source = (self.root / "apps/api/routes/chat.py").read_text(encoding="utf-8")
+        self.assertIn("if task_type == TASK_RAG:", source)
+        self.assertIn("elif task_type == TASK_BI:", source)
+        self.assertIn("general_agent.stream_ask", source)
+        self.assertIn('response.headers["X-Model"] = selected_model', source)
+
+    def test_dedicated_rag_endpoint_does_not_use_global_router_model(self):
+        source = (self.root / "apps/api/routes/rag.py").read_text(encoding="utf-8")
+        self.assertNotIn("router.route", source)
+        self.assertIn("rag_agent.ask(question, session_id=session_id)", source)
+        self.assertIn('response.headers["X-Route"] = TASK_RAG', source)
+
+    def test_dedicated_bi_endpoint_does_not_use_global_router_model(self):
+        source = (self.root / "apps/api/routes/bi.py").read_text(encoding="utf-8")
+        self.assertNotIn("router.route", source)
+        self.assertIn("bi_agent.ask(question, session_id=session_id, dataset_name=dataset)", source)
+        self.assertIn('result["route"] = TASK_BI', source)
 
 
 if __name__ == "__main__":

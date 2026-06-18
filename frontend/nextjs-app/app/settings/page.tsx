@@ -1,23 +1,29 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { CheckCircle, RefreshCw, XCircle } from "lucide-react";
 import { api } from "@/lib/api";
 
 export default function SettingsPage() {
   const [health, setHealth] = useState<any>(null);
   const [stats, setStats] = useState<any>(null);
+  const [modelSettings, setModelSettings] = useState<any>(null);
+  const [saving, setSaving] = useState(false);
+  const [saveStatus, setSaveStatus] = useState("");
   const [loading, setLoading] = useState(true);
+  const saveRequestRef = useRef(0);
 
   const refresh = async () => {
     setLoading(true);
     try {
-      const [h, s] = await Promise.all([api.health(), api.analyticsSummary(168)]);
+      const [h, s, m] = await Promise.all([api.health(), api.analyticsSummary(168), api.modelSettings()]);
       setHealth(h);
       setStats(s);
+      setModelSettings(m);
     } catch {
       setHealth(null);
       setStats(null);
+      setModelSettings(null);
     } finally {
       setLoading(false);
     }
@@ -33,6 +39,58 @@ export default function SettingsPage() {
     ["Avg Latency", stats?.avg_latency_ms ? `${stats.avg_latency_ms}ms` : "-"],
     ["P95 Latency", stats?.p95_latency_ms ? `${stats.p95_latency_ms}ms` : "-"],
   ];
+
+  const taskModels = modelSettings?.task_models || health?.task_models || {};
+  const availableModels = modelSettings?.available_models || health?.models || [];
+
+  const persistTaskModels = async (nextTaskModels: Record<string, string>) => {
+    const requestId = saveRequestRef.current + 1;
+    saveRequestRef.current = requestId;
+    setSaving(true);
+    setSaveStatus("Saving...");
+    try {
+      const saved = await api.updateModelSettings(nextTaskModels);
+      if (saveRequestRef.current === requestId) {
+        setModelSettings(saved);
+        setHealth(await api.health());
+        setSaveStatus("Saved");
+      }
+    } catch {
+      if (saveRequestRef.current === requestId) {
+        setSaveStatus("Could not save");
+      }
+    } finally {
+      if (saveRequestRef.current === requestId) {
+        setSaving(false);
+      }
+    }
+  };
+
+  const setTaskModel = (task: string, model: string) => {
+    const nextTaskModels = { ...taskModels, [task]: model };
+    setModelSettings((current: any) => ({
+      ...(current || {}),
+      task_models: nextTaskModels,
+      available_models: availableModels,
+    }));
+    persistTaskModels(nextTaskModels);
+  };
+
+  const saveModels = async () => {
+    await persistTaskModels(taskModels);
+  };
+
+  const resetModels = async () => {
+    setSaving(true);
+    setSaveStatus("Resetting...");
+    try {
+      setModelSettings(await api.resetModelSettings());
+      setHealth(await api.health());
+      setSaveStatus("Defaults restored");
+    } finally {
+      setSaving(false);
+    }
+  };
 
   return (
     <div className="mx-auto max-w-5xl px-4 py-6 sm:px-6 lg:py-8">
@@ -85,24 +143,46 @@ export default function SettingsPage() {
         </section>
 
         <section className="rounded-md border border-slate-800 bg-slate-900/70 p-5 lg:col-span-2">
-          <h2 className="mb-3 text-sm font-semibold text-slate-200">Model Routing</h2>
-          <p className="max-w-3xl text-sm leading-6 text-slate-500">
-            Response model selection is centralized in the query router. The router classifies each user query as RAG,
-            BI, memory, or general, then attaches the model for that task before the request reaches an agent.
-          </p>
-          {health?.task_models && (
-            <div className="mt-4 grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
-              {Object.entries(health.task_models).map(([task, model]) => (
-                <div key={task} className="rounded-md bg-slate-950/80 p-3">
-                  <p className="text-xs uppercase tracking-wide text-slate-600">{task}</p>
-                  <p className="mt-1 truncate text-sm font-medium text-slate-200">{model as string}</p>
-                </div>
-              ))}
+          <div className="mb-4 flex items-center justify-between gap-4">
+            <div>
+              <h2 className="text-sm font-semibold text-slate-200">Agent Models</h2>
+              <p className="mt-1 text-sm text-slate-500">Choose the default model each agent uses. Changes save automatically.</p>
+              {saveStatus && <p className="mt-1 text-xs text-slate-500">{saveStatus}</p>}
             </div>
-          )}
-          <p className="mt-3 text-xs text-slate-600">
-            Configure task models with TASK_MODELS_JSON in the root environment file.
-          </p>
+            <div className="flex gap-2">
+              <button
+                onClick={resetModels}
+                disabled={saving}
+                className="rounded-md border border-slate-700 px-3 py-2 text-sm text-slate-300 transition hover:border-slate-500 hover:text-white disabled:opacity-50"
+              >
+                Reset
+              </button>
+              <button
+                onClick={saveModels}
+                disabled={saving}
+                className="flex items-center gap-2 rounded-md bg-cyan-400 px-3 py-2 text-sm font-medium text-slate-950 transition hover:bg-cyan-300 disabled:opacity-50"
+              >
+                <RefreshCw size={15} className={saving ? "animate-spin" : ""} />
+                Save
+              </button>
+            </div>
+          </div>
+          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+            {Object.entries(taskModels).map(([task, model]) => (
+              <label key={task} className="rounded-md bg-slate-950/80 p-3">
+                <span className="mb-2 block text-xs uppercase tracking-wide text-slate-600">{task}</span>
+                <select
+                  value={model as string}
+                  onChange={(e) => setTaskModel(task, e.target.value)}
+                  className="w-full rounded-md border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-slate-100 outline-none focus:border-cyan-400"
+                >
+                  {[model as string, ...availableModels.filter((m: string) => m !== model)].map((option: string) => (
+                    <option key={option} value={option}>{option}</option>
+                  ))}
+                </select>
+              </label>
+            ))}
+          </div>
         </section>
       </div>
     </div>
