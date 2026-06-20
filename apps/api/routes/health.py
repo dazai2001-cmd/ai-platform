@@ -13,10 +13,12 @@ health_bp = Blueprint("health", __name__, url_prefix="/api")
 @health_bp.get("/health")
 def health():
     ollama_ok = ollama.health()
-    models = ollama.list_models() if ollama_ok else []
+    cloud_ok = ollama.cloud_configured()
+    models = ollama.list_models()
     return jsonify({
-        "status": "ok" if ollama_ok else "degraded",
+        "status": "ok" if ollama_ok or cloud_ok else "degraded",
         "ollama": ollama_ok,
+        "cloud_models": cloud_ok,
         "models": models,
         "task_models": settings.TASK_MODELS,
         "router_model": settings.ROUTER_MODEL,
@@ -44,7 +46,7 @@ def warmup():
 def get_model_settings():
     return jsonify({
         "task_models": model_settings.get(),
-        "available_models": ollama.list_models() if ollama.health() else [],
+        "available_models": ollama.list_models(),
     })
 
 
@@ -53,7 +55,7 @@ def update_model_settings():
     data = request.json or {}
     return jsonify({
         "task_models": model_settings.update(data.get("task_models", {})),
-        "available_models": ollama.list_models() if ollama.health() else [],
+        "available_models": ollama.list_models(),
     })
 
 
@@ -61,7 +63,7 @@ def update_model_settings():
 def reset_model_settings():
     return jsonify({
         "task_models": model_settings.reset(),
-        "available_models": ollama.list_models() if ollama.health() else [],
+        "available_models": ollama.list_models(),
     })
 
 

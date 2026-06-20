@@ -103,7 +103,72 @@ class SQLiteService:
             )
             """, ()),
             ("CREATE INDEX IF NOT EXISTS idx_chat_messages_conversation ON chat_messages(conversation_id, id)", ()),
+            ("""
+            CREATE TABLE IF NOT EXISTS career_preferences (
+              id INTEGER PRIMARY KEY CHECK (id = 1),
+              preferences_json TEXT NOT NULL,
+              updated_at REAL NOT NULL
+            )
+            """, ()),
+            ("""
+            CREATE TABLE IF NOT EXISTS career_profile (
+              id INTEGER PRIMARY KEY CHECK (id = 1),
+              cv_text TEXT NOT NULL,
+              updated_at REAL NOT NULL
+            )
+            """, ()),
+            ("""
+            CREATE TABLE IF NOT EXISTS career_jobs (
+              id TEXT PRIMARY KEY,
+              title TEXT NOT NULL,
+              company TEXT,
+              location TEXT,
+              url TEXT,
+              description TEXT NOT NULL,
+              source TEXT NOT NULL,
+              status TEXT NOT NULL,
+              fit_score INTEGER,
+              decision TEXT,
+              analysis_json TEXT,
+              applied_at REAL,
+              created_at REAL NOT NULL,
+              updated_at REAL NOT NULL
+            )
+            """, ()),
+            ("CREATE INDEX IF NOT EXISTS idx_career_jobs_updated ON career_jobs(updated_at DESC)", ()),
+            ("""
+            CREATE TABLE IF NOT EXISTS career_score_batches (
+              id TEXT PRIMARY KEY,
+              status TEXT NOT NULL,
+              cv_text TEXT NOT NULL,
+              total INTEGER NOT NULL DEFAULT 0,
+              completed INTEGER NOT NULL DEFAULT 0,
+              failed INTEGER NOT NULL DEFAULT 0,
+              created_at REAL NOT NULL,
+              updated_at REAL NOT NULL
+            )
+            """, ()),
+            ("""
+            CREATE TABLE IF NOT EXISTS career_score_tasks (
+              batch_id TEXT NOT NULL,
+              job_id TEXT NOT NULL,
+              status TEXT NOT NULL,
+              error TEXT,
+              created_at REAL NOT NULL,
+              updated_at REAL NOT NULL,
+              PRIMARY KEY (batch_id, job_id),
+              FOREIGN KEY(batch_id) REFERENCES career_score_batches(id) ON DELETE CASCADE,
+              FOREIGN KEY(job_id) REFERENCES career_jobs(id) ON DELETE CASCADE
+            )
+            """, ()),
+            ("CREATE INDEX IF NOT EXISTS idx_career_score_tasks_status ON career_score_tasks(status, created_at)", ()),
         ])
+        self._ensure_column("career_jobs", "applied_at", "REAL")
+
+    def _ensure_column(self, table: str, column: str, definition: str):
+        existing = {row["name"] for row in self.query(f"PRAGMA table_info({table})")}
+        if column not in existing:
+            self.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
 
 
 db = SQLiteService()

@@ -12,6 +12,7 @@ from apps.api.routes.health import health_bp
 from apps.api.routes.chat import chat_bp
 from apps.api.routes.career import career_bp
 from apps.api.routes.jobs import jobs_bp
+from services.career.job_search_service import career_jobs
 
 
 def create_app() -> Flask:
@@ -39,6 +40,7 @@ def create_app() -> Flask:
     def root():
         return {"name": "AI Platform", "version": "1.0", "agents": ["rag", "bi", "critic"]}
 
+    career_jobs.start_score_worker()
     return app
 
 

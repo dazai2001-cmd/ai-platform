@@ -149,4 +149,51 @@ export const api = {
     post("/api/career/cover-letter", { cv_text: cvText, job_description: jobDescription, model }),
   careerPack: (cvText: string, jobDescription: string, model?: string) =>
     post("/api/career/pack", { cv_text: cvText, job_description: jobDescription, model }),
+  careerProfile: () => get("/api/career/profile"),
+  updateCareerProfile: (cvText: string) =>
+    fetch(`${baseUrl()}/api/career/profile`, {
+      method: "PUT",
+      headers: headers("application/json"),
+      body: JSON.stringify({ cv_text: cvText }),
+    }).then(parseResponse),
+  careerPreferences: () => get("/api/career/preferences"),
+  updateCareerPreferences: (preferences: Record<string, string>) =>
+    fetch(`${baseUrl()}/api/career/preferences`, {
+      method: "PUT",
+      headers: headers("application/json"),
+      body: JSON.stringify(preferences),
+    }).then(parseResponse),
+  careerJobs: () => get("/api/career/jobs"),
+  saveCareerJob: (job: {
+    description: string;
+    title?: string;
+    company?: string;
+    location?: string;
+    url?: string;
+    source?: string;
+    cv_text?: string;
+  }) => post("/api/career/jobs", job),
+  importCareerJobUrl: (url: string, cvText?: string) =>
+    post("/api/career/jobs/import-url", { url, cv_text: cvText }),
+  searchCareerJobs: (cvText?: string, limit = 10) =>
+    post("/api/career/jobs/search", { cv_text: cvText, limit }),
+  searchCareerJobsStream: (cvText?: string, limit = 10) =>
+    postRaw("/api/career/jobs/search/stream", { cv_text: cvText, limit }),
+  scoreCareerJob: (jobId: string, cvText: string) =>
+    post(`/api/career/jobs/${jobId}/score`, { cv_text: cvText }),
+  generateCareerMatchPack: (jobId: string, cvText: string) =>
+    post(`/api/career/jobs/${jobId}/pack`, { cv_text: cvText }),
+  startCareerScoreBatch: (cvText: string, jobIds?: string[]) =>
+    post("/api/career/jobs/score-batches", { cv_text: cvText, job_ids: jobIds }),
+  currentCareerScoreBatch: () => get("/api/career/jobs/score-batches/current"),
+  careerScoreBatch: (batchId: string) => get(`/api/career/jobs/score-batches/${batchId}`),
+  cancelCareerScoreBatch: (batchId: string) => post(`/api/career/jobs/score-batches/${batchId}/cancel`, {}),
+  updateCareerJobStatus: (jobId: string, status: string) =>
+    fetch(`${baseUrl()}/api/career/jobs/${jobId}/status`, {
+      method: "PUT",
+      headers: headers("application/json"),
+      body: JSON.stringify({ status }),
+    }).then(parseResponse),
+  deleteCareerJob: (jobId: string) =>
+    fetch(`${baseUrl()}/api/career/jobs/${jobId}`, { method: "DELETE", headers: headers() }).then(parseResponse),
 };
