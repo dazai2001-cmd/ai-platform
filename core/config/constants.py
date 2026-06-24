@@ -7,6 +7,7 @@ TASK_CAREER = "career"
 MODEL_QWEN = "qwen3:8b"
 MODEL_LLAMA = "llama3:latest"
 MODEL_MISTRAL = "mistral:latest"
+MODEL_GLM_52 = "z-ai/glm-5.2-free"
 
 DEFAULT_TASK_MODEL_MAP = {
     TASK_RAG: MODEL_QWEN,

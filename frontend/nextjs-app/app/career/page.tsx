@@ -3,35 +3,464 @@
 import type { ReactNode } from "react";
 import { useEffect, useState } from "react";
 import Link from "next/link";
-import { BriefcaseBusiness, Download, FileText, Gauge, Loader2, Settings, Sparkles } from "lucide-react";
+import {
+  BookmarkPlus,
+  BriefcaseBusiness,
+  CheckCircle2,
+  ChevronDown,
+  Download,
+  ExternalLink,
+  FileText,
+  FolderOpen,
+  Gauge,
+  Link as LinkIcon,
+  Loader2,
+  Search,
+  Settings,
+  Square,
+  Sparkles,
+  Trash2,
+  XCircle,
+} from "lucide-react";
 import { api } from "@/lib/api";
+
+type CareerJob = {
+  id: string;
+  title: string;
+  company: string;
+  location: string;
+  url: string;
+  description: string;
+  source: string;
+  status: string;
+  fit_score?: number | null;
+  decision?: string;
+  analysis?: any;
+  applied_at?: number | null;
+  created_at?: number;
+  updated_at?: number;
+};
+
+const defaultPreferences = {
+  roles: "",
+  locations: "",
+  remote: "any",
+  industries: "",
+  must_have: "",
+  avoid: "",
+  match_mode: "both",
+};
+
+type CareerAnalysis = {
+  fit_score?: number | null;
+  summary?: string;
+  matched_skills?: string[];
+  missing_or_weak_signals?: string[];
+};
+
+type CareerTab = "found" | "matches" | "saved" | "applied" | "skipped";
+type MatchSort = "score" | "newest" | "oldest";
+type WorkModeFilter = "all" | "remote" | "hybrid" | "onsite";
+
+type ScoreBatchProgress = {
+  id: string;
+  total: number;
+  completed: number;
+  failed: number;
+  cancelled: number;
+  remaining: number;
+  processed: number;
+  progress: number;
+  current_job?: { id: string; title: string } | null;
+  status: "queued" | "running" | "completed" | "cancelled";
+};
+
+const careerTabs: { id: CareerTab; label: string }[] = [
+  { id: "found", label: "Found" },
+  { id: "matches", label: "Matches" },
+  { id: "saved", label: "Saved" },
+  { id: "applied", label: "Applied" },
+  { id: "skipped", label: "Skipped" },
+];
+const workModeFilters: { id: WorkModeFilter; label: string }[] = [
+  { id: "all", label: "All" },
+  { id: "remote", label: "Remote" },
+  { id: "hybrid", label: "Hybrid" },
+  { id: "onsite", label: "On-site" },
+];
+const MIN_MATCH_SCORE = 70;
 
 export default function CareerPage() {
   const [cvText, setCvText] = useState("");
   const [jobDescription, setJobDescription] = useState("");
   const [careerModel, setCareerModel] = useState("");
-  const [loadingAction, setLoadingAction] = useState<"" | "analysis" | "pack">("");
+  const [preferences, setPreferences] = useState<Record<string, string>>(defaultPreferences);
+  const [preferencesReady, setPreferencesReady] = useState(false);
+  const [profileReady, setProfileReady] = useState(false);
+  const [jobs, setJobs] = useState<CareerJob[]>([]);
+  const [jobUrl, setJobUrl] = useState("");
+  const [loadingAction, setLoadingAction] = useState<"" | "analysis">("");
+  const [jobAction, setJobAction] = useState("");
+  const [activeTab, setActiveTab] = useState<CareerTab>("matches");
   const [result, setResult] = useState<any>(null);
+  const [resultJobTitle, setResultJobTitle] = useState("");
   const [error, setError] = useState("");
-  const loading = Boolean(loadingAction);
+  const [notice, setNotice] = useState("");
+  const [scoreBatch, setScoreBatch] = useState<ScoreBatchProgress | null>(null);
+  const [matchSort, setMatchSort] = useState<MatchSort>("score");
+  const [workModeFilter, setWorkModeFilter] = useState<WorkModeFilter>("all");
+  const [expandedJobIds, setExpandedJobIds] = useState<string[]>([]);
+  const loading = Boolean(loadingAction || jobAction);
 
   useEffect(() => {
     let cancelled = false;
-    api.modelSettings()
-      .then((settings) => {
+    Promise.all([
+      api.modelSettings(),
+      api.careerPreferences(),
+      api.careerProfile(),
+      api.careerJobs(),
+      api.currentCareerScoreBatch(),
+    ])
+      .then(([settings, prefs, profile, savedJobs, currentBatch]) => {
+        const localPrefs = readLocalCareerPreferences();
         if (!cancelled) setCareerModel(settings.task_models?.career || "");
+        if (!cancelled) setPreferences({ ...defaultPreferences, ...(prefs || {}), ...localPrefs });
+        if (!cancelled) setCvText(profile?.cv_text || readLocalCareerProfile());
+        if (!cancelled) setJobs(savedJobs || []);
+        if (!cancelled) setScoreBatch(currentBatch || null);
+        if (!cancelled) setPreferencesReady(true);
+        if (!cancelled) setProfileReady(true);
       })
       .catch(() => {
         if (!cancelled) setCareerModel("");
+        if (!cancelled) {
+          setPreferences({ ...defaultPreferences, ...readLocalCareerPreferences() });
+          setCvText(readLocalCareerProfile());
+          setPreferencesReady(true);
+          setProfileReady(true);
+        }
       });
     return () => {
       cancelled = true;
     };
   }, []);
 
+  useEffect(() => {
+    if (!preferencesReady) return;
+    window.localStorage.setItem("career-search-criteria", JSON.stringify(preferences));
+  }, [preferences, preferencesReady]);
+
+  useEffect(() => {
+    if (!profileReady) return;
+    window.localStorage.setItem("career-profile", cvText);
+    const timeout = window.setTimeout(() => {
+      api.updateCareerProfile(cvText).catch(() => undefined);
+    }, 800);
+    return () => window.clearTimeout(timeout);
+  }, [cvText, profileReady]);
+
+  useEffect(() => {
+    if (!scoreBatch || !["queued", "running"].includes(scoreBatch.status)) return;
+    let cancelled = false;
+
+    const refreshBatch = async () => {
+      try {
+        const [batch, refreshedJobs] = await Promise.all([
+          api.careerScoreBatch(scoreBatch.id),
+          api.careerJobs(),
+        ]);
+        if (!cancelled) {
+          setScoreBatch(batch);
+          setJobs(refreshedJobs || []);
+        }
+      } catch (err) {
+        if (!cancelled) setError(err instanceof Error ? err.message : "Failed to refresh scoring progress");
+      }
+    };
+
+    const interval = window.setInterval(refreshBatch, 2000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(interval);
+    };
+  }, [scoreBatch?.id, scoreBatch?.status]);
+
+  const savePreferences = async () => {
+    setJobAction("preferences");
+    setError("");
+    setNotice("");
+    try {
+      setPreferences(await api.updateCareerPreferences(preferences));
+      setNotice("Search criteria saved.");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to save preferences");
+    } finally {
+      setJobAction("");
+    }
+  };
+
+  const searchJobs = async () => {
+    setJobAction("search");
+    setError("");
+    setNotice("");
+    try {
+      await api.updateCareerPreferences(preferences);
+      setActiveTab("found");
+      const response = await api.searchCareerJobsStream(cvText.trim() || undefined, 50);
+      await readCareerSearchStream(response);
+      const refreshedJobs = await api.careerJobs();
+      setJobs(refreshedJobs);
+
+      if (preferences.match_mode !== "criteria" && cvText.trim()) {
+        const unscoredIds = refreshedJobs
+          .filter((job: CareerJob) => isSearchJob(job) && typeof job.fit_score !== "number" && job.status !== "skipped")
+          .map((job: CareerJob) => job.id);
+        if (unscoredIds.length) {
+          const batch = await api.startCareerScoreBatch(cvText, unscoredIds);
+          setScoreBatch(batch);
+          setNotice(`Search complete. ${batch.total} unique Found jobs queued for background scoring.`);
+        }
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to search jobs");
+    } finally {
+      setJobAction("");
+    }
+  };
+
+  const readCareerSearchStream = async (response: Response) => {
+    const reader = response.body?.getReader();
+    if (!reader) throw new Error("No search stream returned.");
+
+    const decoder = new TextDecoder();
+    let buffer = "";
+    let savedCount = 0;
+    let scoredCount = 0;
+    let rejectedLowScore = 0;
+    let query = "jobs";
+    let matchMode = preferences.match_mode;
+    let searchedSources: string[] = [];
+    let skippedSources: string[] = [];
+
+    const updateNotice = (done = false) => {
+      const searched = searchedSources.length ? ` Searched: ${searchedSources.join(", ")}.` : "";
+      const skipped = skippedSources.length ? ` Skipped: ${skippedSources.join(", ")}.` : "";
+      const matchedCount = Math.max(savedCount - rejectedLowScore, 0);
+      const scored = scoredCount ? ` ${scoredCount} scored; ${matchedCount} are ${MIN_MATCH_SCORE}+ Matches.` : "";
+      const rejected = rejectedLowScore ? ` ${rejectedLowScore} below ${MIN_MATCH_SCORE}/100 kept in Found.` : "";
+      const empty = done && savedCount === 0 ? " Try broader roles, fewer avoid terms, or Remote as the work mode." : "";
+      setNotice(`Found ${savedCount} new jobs for "${query}" using ${matchModeLabel(matchMode)}.${searched}${skipped}${scored}${rejected}${empty}`);
+    };
+
+    const handleEvent = (event: any) => {
+      if (event.event === "started") {
+        query = event.query || query;
+        matchMode = event.match_mode || matchMode;
+        searchedSources = event.searched_sources || [];
+        skippedSources = event.skipped_sources || [];
+        setNotice(`Searching "${query}"...${searchedSources.length ? ` Sources: ${searchedSources.join(", ")}.` : ""}`);
+        return;
+      }
+
+      if ((event.event === "found" || event.event === "scored") && event.job && event.accepted !== false) {
+        savedCount = event.saved_count ?? savedCount + 1;
+        if (event.event === "scored") scoredCount = event.scored_count ?? scoredCount + 1;
+        setJobs((current) => mergeJobs([event.job], current));
+        if (event.event === "scored") {
+          const score = event.job.fit_score ?? "?";
+          setNotice(`Scored "${event.job.title || "job"}": ${score}/100. Added to Matches. ${savedCount} saved, ${scoredCount} scored so far.`);
+        } else {
+          updateNotice();
+        }
+        return;
+      }
+
+      if (event.event === "scored" && event.accepted === false) {
+        scoredCount = event.scored_count ?? scoredCount + 1;
+        savedCount = event.saved_count ?? savedCount + 1;
+        rejectedLowScore = event.rejected_low_score ?? rejectedLowScore + 1;
+        const score = event.job?.fit_score ?? "?";
+        if (event.job) setJobs((current) => mergeJobs([event.job], current));
+        setNotice(`Scored "${event.job?.title || "job"}": ${score}/100. Kept in Found; below ${MIN_MATCH_SCORE}/100 so it is not in Matches. ${scoredCount} scored so far.`);
+        return;
+      }
+
+      if (event.event === "error") {
+        setError(event.error || "Search stream error");
+        return;
+      }
+
+      if (event.event === "done") {
+        savedCount = event.count ?? savedCount;
+        scoredCount = event.scored_count ?? scoredCount;
+        rejectedLowScore = event.rejected_low_score ?? rejectedLowScore;
+        searchedSources = event.searched_sources || searchedSources;
+        skippedSources = event.skipped_sources || skippedSources;
+        updateNotice(true);
+      }
+    };
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split("\n");
+      buffer = lines.pop() || "";
+      for (const line of lines) {
+        if (!line.trim()) continue;
+        handleEvent(JSON.parse(line));
+      }
+    }
+    if (buffer.trim()) handleEvent(JSON.parse(buffer));
+  };
+
+  const importJobUrl = async () => {
+    if (!jobUrl.trim()) return;
+    setJobAction("import-url");
+    setError("");
+    setNotice("");
+    try {
+      const job = await api.importCareerJobUrl(jobUrl.trim(), cvText.trim() || undefined);
+      setJobs((current) => [job, ...current]);
+      setJobDescription(job.description);
+      setJobUrl("");
+      setActiveTab(job.status === "saved" ? "saved" : "matches");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to import job URL");
+    } finally {
+      setJobAction("");
+    }
+  };
+
+  const saveCurrentJob = async () => {
+    if (!jobDescription.trim()) return;
+    setJobAction("save-job");
+    setError("");
+    setNotice("");
+    try {
+      const job = await api.saveCareerJob({
+        description: jobDescription,
+        cv_text: cvText.trim() || undefined,
+        source: "manual",
+      });
+      setJobs((current) => [job, ...current]);
+      setActiveTab(job.status === "saved" ? "saved" : "matches");
+      setNotice("Job saved to the tracker.");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to save job");
+    } finally {
+      setJobAction("");
+    }
+  };
+
+  const scoreSavedJob = async (job: CareerJob) => {
+    if (!cvText.trim()) {
+      setError("Paste your CV/profile before scoring a saved job.");
+      return;
+    }
+    setJobAction(job.id);
+    setError("");
+    setNotice("");
+    try {
+      const scored = await api.scoreCareerJob(job.id, cvText);
+      setJobs((current) => current.map((item) => (item.id === scored.id ? scored : item)));
+      setNotice(`Scored "${scored.title || "job"}": ${scored.fit_score ?? "?"}/100.`);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to score saved job");
+    } finally {
+      setJobAction("");
+    }
+  };
+
+  const scoreAllFoundJobs = async () => {
+    if (!cvText.trim()) {
+      setError("Paste your CV/profile before scoring jobs.");
+      return;
+    }
+    const jobIds = jobs
+      .filter((job) => jobBelongsToTab(job, "found") && typeof job.fit_score !== "number")
+      .map((job) => job.id);
+    if (!jobIds.length) return;
+
+    setJobAction("score-all");
+    setError("");
+    setNotice("");
+    try {
+      const batch = await api.startCareerScoreBatch(cvText, jobIds);
+      setScoreBatch(batch);
+      setNotice(`${batch.total} unique Found jobs queued. You can leave this page while they score.`);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to start background scoring");
+    } finally {
+      setJobAction("");
+    }
+  };
+
+  const stopScoreAll = () => {
+    if (!scoreBatch || !["queued", "running"].includes(scoreBatch.status)) return;
+    setJobAction("cancel-score-all");
+    setError("");
+    api.cancelCareerScoreBatch(scoreBatch.id)
+      .then((batch) => {
+        setScoreBatch(batch);
+        setNotice("Background scoring stopped. The current model call may finish safely.");
+      })
+      .catch((err) => setError(err instanceof Error ? err.message : "Failed to stop background scoring"))
+      .finally(() => setJobAction(""));
+  };
+
+  const toggleJobDetails = (jobId: string) => {
+    setExpandedJobIds((current) =>
+      current.includes(jobId) ? current.filter((id) => id !== jobId) : [...current, jobId],
+    );
+  };
+
+  const updateJobStatus = async (jobId: string, status: string) => {
+    const tabBeforeUpdate = activeTab;
+    setJobAction(`${jobId}:${status}`);
+    setError("");
+    setNotice("");
+    try {
+      const updated = await api.updateCareerJobStatus(jobId, status);
+      setJobs((current) => current.map((job) => (job.id === updated.id ? updated : job)));
+      setActiveTab(tabBeforeUpdate);
+      setNotice(`Marked "${updated.title || "job"}" as ${statusLabel(updated.status).toLowerCase()}.`);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to update job status");
+      setActiveTab(tabBeforeUpdate);
+    } finally {
+      setJobAction("");
+    }
+  };
+
+  const openApplyLink = async (job: CareerJob) => {
+    if (!job.url) {
+      setError("This saved job does not have an application link yet.");
+      return;
+    }
+    window.open(job.url, "_blank", "noopener,noreferrer");
+    await updateJobStatus(job.id, "opened");
+  };
+
+  const removeJob = async (jobId: string) => {
+    setJobAction(jobId);
+    setError("");
+    setNotice("");
+    try {
+      await api.deleteCareerJob(jobId);
+      setJobs((current) => current.filter((job) => job.id !== jobId));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to delete job");
+    } finally {
+      setJobAction("");
+    }
+  };
+
   const scoreFit = async () => {
     setLoadingAction("analysis");
     setError("");
+    setNotice("");
+    setResultJobTitle("");
     try {
       const analysis = await api.careerAnalyze(cvText, jobDescription);
       setResult({ analysis, model: analysis.model });
@@ -43,43 +472,55 @@ export default function CareerPage() {
     }
   };
 
-  const generate = async () => {
-    setLoadingAction("pack");
+  const generateForJob = async (job: CareerJob) => {
+    if (!cvText.trim()) {
+      setError("Paste your CV/profile before generating an application pack.");
+      return;
+    }
+    setJobAction(`pack:${job.id}`);
     setError("");
+    setNotice("");
     setResult(null);
+    setResultJobTitle([job.title, job.company].filter(Boolean).join(" at "));
+    setJobDescription(job.description);
     try {
-      const pack = await api.careerPack(cvText, jobDescription);
+      const pack = await api.generateCareerMatchPack(job.id, cvText);
       setResult(pack);
       if (pack.model) setCareerModel(pack.model);
+      setNotice(`Application pack generated for "${job.title}".`);
+      window.setTimeout(() => document.getElementById("career-pack-output")?.scrollIntoView({ behavior: "smooth" }), 50);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to generate application pack");
     } finally {
-      setLoadingAction("");
+      setJobAction("");
     }
   };
 
   const downloadPack = () => {
     if (!result) return;
+    const analysis = getCareerAnalysis(result);
+    const tailoredCv = getTailoredCv(result);
+    const coverLetter = getCoverLetter(result);
     const lines = [
       "# Career Agent Output",
       "",
       "## Fit Analysis",
       "",
-      `Score: ${result.analysis?.fit_score ?? "?"}/100`,
+      `Score: ${analysis?.fit_score ?? "Not returned"}/100`,
       "",
-      result.analysis?.summary || "",
+      analysis?.summary || "",
       "",
       "## Tailored CV",
       "",
-      result.tailored_cv?.headline || "",
+      tailoredCv?.headline || "",
       "",
-      result.tailored_cv?.professional_summary || "",
+      tailoredCv?.professional_summary || "",
       "",
-      ...(result.tailored_cv?.tailored_bullets || []).map((item: string) => `- ${item}`),
+      ...(tailoredCv?.tailored_bullets || []).map((item: string) => `- ${item}`),
       "",
       "## Cover Letter",
       "",
-      result.cover_letter?.cover_letter || "",
+      coverLetter?.cover_letter || "",
     ];
     const blob = new Blob([lines.join("\n")], { type: "text/markdown;charset=utf-8" });
     const url = URL.createObjectURL(blob);
@@ -89,6 +530,25 @@ export default function CareerPage() {
     link.click();
     URL.revokeObjectURL(url);
   };
+
+  const analysis = getCareerAnalysis(result);
+  const tailoredCv = getTailoredCv(result);
+  const coverLetter = getCoverLetter(result);
+  const resultWarning = getResultWarning(result);
+  const tabCounts = Object.fromEntries(
+    careerTabs.map((tab) => [tab.id, jobs.filter((job) => jobBelongsToTab(job, tab.id)).length]),
+  ) as Record<CareerTab, number>;
+  const visibleJobs = jobs.filter((job) => jobBelongsToTab(job, activeTab));
+  const displayedJobs = activeTab === "matches"
+    ? visibleJobs
+        .filter((job) => workModeFilter === "all" || jobWorkMode(job) === workModeFilter)
+        .sort((left, right) => compareMatchJobs(left, right, matchSort))
+    : visibleJobs;
+  const unscoredFoundJobs = jobs.filter(
+    (job) => jobBelongsToTab(job, "found") && typeof job.fit_score !== "number",
+  );
+  const scoreBatchActive = Boolean(scoreBatch && ["queued", "running"].includes(scoreBatch.status));
+  const scoreBatchPercent = scoreBatch?.progress ?? 0;
 
   return (
     <div className="min-h-screen text-slate-100">
@@ -120,6 +580,95 @@ export default function CareerPage() {
             <div className="truncate text-sm font-medium text-slate-100">{careerModel || "Loading..."}</div>
           </div>
 
+          <div className="app-panel mb-4 rounded-md p-3">
+            <div className="mb-3 flex items-center justify-between gap-3">
+              <div>
+                <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">Job Search Criteria</div>
+                <div className="text-xs text-slate-600">Used to find and rank roles later.</div>
+              </div>
+              <div className="flex gap-2">
+                <button
+                  onClick={savePreferences}
+                  disabled={loading}
+                  className="rounded-md border border-slate-700 px-2.5 py-1.5 text-xs text-slate-300 transition hover:border-cyan-400 hover:text-cyan-200 disabled:opacity-50"
+                >
+                  {jobAction === "preferences" ? "Saving..." : "Save"}
+                </button>
+                <button
+                  onClick={searchJobs}
+                  disabled={loading}
+                  className="inline-flex items-center gap-1.5 rounded-md bg-cyan-300 px-2.5 py-1.5 text-xs font-medium text-slate-950 transition hover:bg-cyan-200 disabled:opacity-50"
+                >
+                  {jobAction === "search" ? <Loader2 size={13} className="animate-spin" /> : <Search size={13} />}
+                  Search
+                </button>
+              </div>
+            </div>
+            <div className="grid gap-2">
+              <input
+                className="app-input rounded-md px-3 py-2 text-sm placeholder:text-slate-600"
+                placeholder="Roles: AI Engineer, ML Intern..."
+                value={preferences.roles}
+                onChange={(e) => setPreferences((current) => ({ ...current, roles: e.target.value }))}
+              />
+              <input
+                className="app-input rounded-md px-3 py-2 text-sm placeholder:text-slate-600"
+                placeholder="Locations: remote, London..."
+                value={preferences.locations}
+                onChange={(e) => setPreferences((current) => ({ ...current, locations: e.target.value }))}
+              />
+              <select
+                className="app-input rounded-md px-3 py-2 text-sm"
+                value={preferences.remote}
+                onChange={(e) => setPreferences((current) => ({ ...current, remote: e.target.value }))}
+              >
+                <option value="any">Any work mode</option>
+                <option value="remote">Remote</option>
+                <option value="hybrid">Hybrid</option>
+                <option value="onsite">On-site</option>
+              </select>
+              <select
+                className="app-input rounded-md px-3 py-2 text-sm"
+                value={preferences.match_mode}
+                onChange={(e) => setPreferences((current) => ({ ...current, match_mode: e.target.value }))}
+              >
+                <option value="both">Profile + criteria</option>
+                <option value="profile">Profile only</option>
+                <option value="criteria">Criteria only</option>
+              </select>
+              <input
+                className="app-input rounded-md px-3 py-2 text-sm placeholder:text-slate-600"
+                placeholder="Must-have skills"
+                value={preferences.must_have}
+                onChange={(e) => setPreferences((current) => ({ ...current, must_have: e.target.value }))}
+              />
+              <input
+                className="app-input rounded-md px-3 py-2 text-sm placeholder:text-slate-600"
+                placeholder="Avoid: unpaid, senior..."
+                value={preferences.avoid}
+                onChange={(e) => setPreferences((current) => ({ ...current, avoid: e.target.value }))}
+              />
+            </div>
+          </div>
+
+          <div className="app-panel mb-4 rounded-md p-3">
+            <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">Import Job URL</div>
+            <input
+              className="app-input mb-2 w-full rounded-md px-3 py-2 text-sm placeholder:text-slate-600"
+              placeholder="https://jobs.lever.co/..."
+              value={jobUrl}
+              onChange={(e) => setJobUrl(e.target.value)}
+            />
+            <button
+              onClick={importJobUrl}
+              disabled={loading || !jobUrl.trim()}
+              className="flex w-full items-center justify-center gap-2 rounded-md border border-slate-700 bg-slate-900/82 px-3 py-2 text-sm font-medium text-slate-100 transition hover:border-cyan-400 hover:text-cyan-200 disabled:opacity-50"
+            >
+              {jobAction === "import-url" ? <Loader2 size={15} className="animate-spin" /> : <LinkIcon size={15} />}
+              Import & Score
+            </button>
+          </div>
+
           <label className="mb-2 flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-slate-500">
             <FileText size={14} /> CV / Profile
           </label>
@@ -148,26 +697,288 @@ export default function CareerPage() {
               Score Fit
             </button>
             <button
-              onClick={generate}
-              disabled={loading || !cvText.trim() || !jobDescription.trim()}
-              className="flex items-center justify-center gap-2 rounded-md bg-cyan-300 px-3 py-2 text-sm font-medium text-slate-950 shadow-lg shadow-cyan-950/20 transition duration-150 hover:-translate-y-0.5 hover:bg-cyan-200 active:translate-y-0 disabled:cursor-not-allowed disabled:opacity-50 disabled:shadow-none"
+              onClick={saveCurrentJob}
+              disabled={loading || !jobDescription.trim()}
+              className="flex items-center justify-center gap-2 rounded-md border border-slate-700 bg-slate-900/82 px-3 py-2 text-sm font-medium text-slate-100 transition duration-150 hover:-translate-y-0.5 hover:border-cyan-400 hover:text-cyan-200 active:translate-y-0 disabled:cursor-not-allowed disabled:opacity-50"
             >
-              {loadingAction === "pack" ? <Loader2 className="animate-spin" size={16} /> : <Sparkles size={16} />}
-              Generate Pack
+              {jobAction === "save-job" ? <Loader2 className="animate-spin" size={16} /> : <BookmarkPlus size={16} />}
+              Save Job
             </button>
           </div>
 
+          {notice && (
+            <div className="mt-4 rounded-md border border-cyan-300/25 bg-cyan-300/10 p-3 text-sm text-cyan-100">
+              {notice}
+            </div>
+          )}
           {error && <div className="mt-4 rounded-md border border-red-400/30 bg-red-400/10 p-3 text-sm text-red-200">{error}</div>}
         </section>
 
-        <section className="p-5">
+        <section className="space-y-5 p-5">
+          <Panel title="Application Tracker">
+            <div className="mb-4 flex flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
+              <div className="flex flex-wrap gap-2">
+                {careerTabs.map((tab) => (
+                  <button
+                    key={tab.id}
+                    onClick={() => setActiveTab(tab.id)}
+                    className={`rounded-md border px-3 py-1.5 text-xs font-medium transition ${
+                      activeTab === tab.id
+                        ? "border-cyan-300/50 bg-cyan-300/10 text-cyan-100"
+                        : "border-slate-800 bg-slate-950/40 text-slate-500 hover:border-slate-600 hover:text-slate-200"
+                    }`}
+                  >
+                    {tab.label} {tabCounts[tab.id] ? `(${tabCounts[tab.id]})` : ""}
+                  </button>
+                ))}
+              </div>
+              <button
+                onClick={scoreBatchActive ? stopScoreAll : scoreAllFoundJobs}
+                disabled={
+                  scoreBatchActive
+                    ? jobAction === "cancel-score-all"
+                    : loading || !cvText.trim() || unscoredFoundJobs.length === 0
+                }
+                className="inline-flex items-center justify-center gap-1.5 rounded-md border border-slate-700 bg-slate-950/50 px-3 py-1.5 text-xs font-medium text-slate-300 transition hover:border-cyan-400 hover:text-cyan-200 disabled:opacity-50"
+              >
+                {scoreBatchActive ? <Square size={12} /> : <Gauge size={13} />}
+                {scoreBatchActive
+                  ? jobAction === "cancel-score-all" ? "Stopping..." : "Stop after current"
+                  : `Score all Found${unscoredFoundJobs.length ? ` (${unscoredFoundJobs.length})` : ""}`}
+              </button>
+            </div>
+
+            {scoreBatch && (
+              <div className="mb-4 rounded-md border border-cyan-300/25 bg-cyan-300/10 p-3" aria-live="polite">
+                <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
+                  <span className="font-medium text-cyan-100">
+                    {scoreBatch.status === "completed"
+                      ? "Background scoring complete"
+                      : scoreBatch.status === "cancelled"
+                        ? "Background scoring stopped"
+                        : scoreBatch.status === "queued"
+                          ? "Background scoring queued"
+                          : `Scoring ${Math.min(scoreBatch.processed + 1, scoreBatch.total)} of ${scoreBatch.total}`}
+                  </span>
+                  <span className="text-slate-400">
+                    {scoreBatch.processed}/{scoreBatch.total} processed / {scoreBatch.completed} scored
+                    {scoreBatch.failed ? ` / ${scoreBatch.failed} failed` : ""}
+                  </span>
+                </div>
+                <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-slate-900">
+                  <div
+                    className="h-full rounded-full bg-cyan-300 transition-[width] duration-300"
+                    style={{ width: `${scoreBatchPercent}%` }}
+                  />
+                </div>
+                {scoreBatch.current_job?.title && (
+                  <div className="mt-2 truncate text-xs text-slate-300">Currently scoring: {scoreBatch.current_job.title}</div>
+                )}
+              </div>
+            )}
+
+            {activeTab === "matches" && (
+              <div className="mb-4 flex flex-col gap-3 border-b border-slate-800/80 pb-4 xl:flex-row xl:items-center xl:justify-between">
+                <div className="flex flex-wrap gap-1" aria-label="Work mode filter">
+                  {workModeFilters.map((mode) => (
+                    <button
+                      key={mode.id}
+                      onClick={() => setWorkModeFilter(mode.id)}
+                      aria-pressed={workModeFilter === mode.id}
+                      className={`rounded-md border px-2.5 py-1.5 text-xs font-medium transition ${
+                        workModeFilter === mode.id
+                          ? "border-cyan-300/50 bg-cyan-300/10 text-cyan-100"
+                          : "border-slate-800 text-slate-500 hover:border-slate-600 hover:text-slate-200"
+                      }`}
+                    >
+                      {mode.label}
+                    </button>
+                  ))}
+                </div>
+                <select
+                  aria-label="Sort matches"
+                  value={matchSort}
+                  onChange={(event) => setMatchSort(event.target.value as MatchSort)}
+                  className="app-input min-w-40 rounded-md px-2.5 py-1.5 text-xs"
+                >
+                  <option value="score">Highest score</option>
+                  <option value="newest">Newest first</option>
+                  <option value="oldest">Oldest first</option>
+                </select>
+              </div>
+            )}
+
+            {jobs.length === 0 ? (
+              <div className="rounded-md border border-dashed border-slate-800 px-4 py-8 text-center text-sm text-slate-500">
+                Import a job URL or save the pasted job description to build a match list.
+              </div>
+            ) : displayedJobs.length === 0 ? (
+              <div className="rounded-md border border-dashed border-slate-800 px-4 py-8 text-center text-sm text-slate-500">
+                No jobs match this {careerTabs.find((tab) => tab.id === activeTab)?.label.toLowerCase()} view.
+              </div>
+            ) : (
+              <div className="space-y-3">
+                {displayedJobs.map((job) => (
+                  <div key={job.id} className="rounded-md border border-slate-800/80 bg-slate-950/58 p-3">
+                    <div className="mb-3 flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                      <div className="min-w-0">
+                        <div className="truncate text-sm font-semibold text-white">{job.title}</div>
+                        <div className="mt-1 text-xs text-slate-500">
+                          {[job.company, job.location, job.source].filter(Boolean).join(" / ") || "Saved job"}
+                        </div>
+                      </div>
+                      <div className="flex shrink-0 items-center gap-2">
+                        {job.fit_score !== null && job.fit_score !== undefined ? (
+                          <span className="rounded-md border border-cyan-300/25 bg-cyan-300/10 px-2 py-1 text-xs font-semibold text-cyan-200">
+                            {job.fit_score}/100
+                          </span>
+                        ) : (
+                          <span className="rounded-md border border-slate-700 px-2 py-1 text-xs text-slate-500">
+                            Unscored
+                          </span>
+                        )}
+                        {activeTab === "matches" && jobWorkMode(job) !== "unknown" && (
+                          <span className="rounded-md border border-slate-700 px-2 py-1 text-xs text-slate-400">
+                            {workModeLabel(jobWorkMode(job))}
+                          </span>
+                        )}
+                        {job.decision && (
+                          <span className="rounded-md border border-slate-700 px-2 py-1 text-xs text-slate-400">
+                            {job.decision}
+                          </span>
+                        )}
+                        <span className="rounded-md border border-slate-700 px-2 py-1 text-xs text-slate-500">
+                          {statusLabel(job.status)}
+                        </span>
+                      </div>
+                    </div>
+
+                    {expandedJobIds.includes(job.id) && <JobMatchDetails analysis={job.analysis} />}
+
+                    {job.status === "opened" && (
+                      <div className="mb-3 rounded-md border border-cyan-300/20 bg-cyan-300/10 p-3 text-sm text-slate-300">
+                        <div className="mb-2 font-medium text-cyan-100">Did you apply?</div>
+                        <div className="flex flex-wrap gap-2">
+                          <StatusButton
+                            icon={<CheckCircle2 size={13} />}
+                            label="Applied"
+                            loading={jobAction === `${job.id}:applied`}
+                            onClick={() => updateJobStatus(job.id, "applied")}
+                          />
+                          <StatusButton
+                            icon={<FolderOpen size={13} />}
+                            label="Save for later"
+                            loading={jobAction === `${job.id}:saved`}
+                            onClick={() => updateJobStatus(job.id, "saved")}
+                          />
+                          <StatusButton
+                            icon={<XCircle size={13} />}
+                            label="Skipped"
+                            loading={jobAction === `${job.id}:skipped`}
+                            onClick={() => updateJobStatus(job.id, "skipped")}
+                          />
+                        </div>
+                      </div>
+                    )}
+
+                    <div className="flex flex-wrap gap-2">
+                      <button
+                        onClick={() => setJobDescription(job.description)}
+                        className="rounded-md border border-slate-700 px-2.5 py-1.5 text-xs text-slate-300 transition hover:border-cyan-400 hover:text-cyan-200"
+                      >
+                        Use
+                      </button>
+                      {job.analysis && (
+                        <button
+                          onClick={() => toggleJobDetails(job.id)}
+                          aria-expanded={expandedJobIds.includes(job.id)}
+                          className="inline-flex items-center gap-1.5 rounded-md border border-slate-700 px-2.5 py-1.5 text-xs text-slate-300 transition hover:border-cyan-400 hover:text-cyan-200"
+                        >
+                          <ChevronDown
+                            size={13}
+                            className={`transition-transform ${expandedJobIds.includes(job.id) ? "rotate-180" : ""}`}
+                          />
+                          Details
+                        </button>
+                      )}
+                      {activeTab === "matches" && (
+                        <button
+                          onClick={() => generateForJob(job)}
+                          disabled={loading || !cvText.trim()}
+                          className="inline-flex items-center gap-1.5 rounded-md border border-cyan-300/30 bg-cyan-300/10 px-2.5 py-1.5 text-xs font-medium text-cyan-100 transition hover:border-cyan-300 hover:bg-cyan-300/15 disabled:opacity-50"
+                        >
+                          {jobAction === `pack:${job.id}` ? <Loader2 size={13} className="animate-spin" /> : <Sparkles size={13} />}
+                          Generate Pack
+                        </button>
+                      )}
+                      <button
+                        onClick={() => scoreSavedJob(job)}
+                        disabled={loading || !cvText.trim()}
+                        className="inline-flex items-center gap-1.5 rounded-md border border-slate-700 px-2.5 py-1.5 text-xs text-slate-300 transition hover:border-cyan-400 hover:text-cyan-200 disabled:opacity-50"
+                      >
+                        {jobAction === job.id ? <Loader2 size={13} className="animate-spin" /> : <Gauge size={13} />}
+                        Score
+                      </button>
+                      {job.url && (
+                        <button
+                          onClick={() => openApplyLink(job)}
+                          disabled={loading}
+                          className="inline-flex items-center gap-1.5 rounded-md border border-slate-700 px-2.5 py-1.5 text-xs text-slate-300 transition hover:border-cyan-400 hover:text-cyan-200"
+                        >
+                          <ExternalLink size={13} />
+                          Apply
+                        </button>
+                      )}
+                      <button
+                        onClick={() => updateJobStatus(job.id, "applied")}
+                        disabled={loading}
+                        className="inline-flex items-center gap-1.5 rounded-md border border-slate-700 px-2.5 py-1.5 text-xs text-slate-300 transition hover:border-emerald-400 hover:text-emerald-200 disabled:opacity-50"
+                      >
+                        <CheckCircle2 size={13} />
+                        Applied
+                      </button>
+                      <button
+                        onClick={() => updateJobStatus(job.id, "saved")}
+                        disabled={loading}
+                        className="inline-flex items-center gap-1.5 rounded-md border border-slate-700 px-2.5 py-1.5 text-xs text-slate-300 transition hover:border-cyan-400 hover:text-cyan-200 disabled:opacity-50"
+                      >
+                        <FolderOpen size={13} />
+                        Save
+                      </button>
+                      <button
+                        onClick={() => updateJobStatus(job.id, "skipped")}
+                        disabled={loading}
+                        className="inline-flex items-center gap-1.5 rounded-md border border-slate-700 px-2.5 py-1.5 text-xs text-slate-500 transition hover:border-amber-400 hover:text-amber-200 disabled:opacity-50"
+                      >
+                        <XCircle size={13} />
+                        Skip
+                      </button>
+                      <button
+                        onClick={() => removeJob(job.id)}
+                        disabled={loading}
+                        className="inline-flex items-center gap-1.5 rounded-md border border-slate-700 px-2.5 py-1.5 text-xs text-slate-500 transition hover:border-rose-400 hover:text-rose-200 disabled:opacity-50"
+                      >
+                        <Trash2 size={13} />
+                        Delete
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </Panel>
+
           {!result ? (
             <div className="app-panel soft-fade-in rounded-md border-dashed px-4 py-16 text-center text-sm text-slate-500">
               Paste a CV and job description to generate a fit score, tailored CV points, and a cover letter.
             </div>
           ) : (
-            <div className="space-y-4">
-              <div className="flex justify-end">
+            <div id="career-pack-output" className="space-y-4">
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                <div>
+                  <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">Application pack</div>
+                  {resultJobTitle && <div className="mt-1 text-sm font-medium text-white">{resultJobTitle}</div>}
+                </div>
                 <button
                   onClick={downloadPack}
                   className="flex items-center gap-2 rounded-md border border-slate-700 bg-slate-900/72 px-3 py-2 text-sm text-slate-300 transition duration-150 hover:-translate-y-0.5 hover:border-cyan-400 hover:text-cyan-200 active:translate-y-0"
@@ -176,28 +987,47 @@ export default function CareerPage() {
                   Download Markdown
                 </button>
               </div>
-              <Panel title="Fit Analysis">
-                <div className="mb-3 text-4xl font-semibold text-cyan-300">
-                  {result.analysis?.fit_score ?? "?"}
-                  <span className="text-base text-slate-500"> / 100</span>
-                </div>
-                <p className="text-sm text-slate-300">{result.analysis?.summary}</p>
-                <List title="Matched" items={result.analysis?.matched_skills} />
-                <List title="Weak Signals" items={result.analysis?.missing_or_weak_signals} />
-              </Panel>
 
-              {result.tailored_cv && (
-                <Panel title="Tailored CV">
-                  <p className="mb-3 text-sm font-medium text-white">{result.tailored_cv.headline}</p>
-                  <p className="text-sm text-slate-300">{result.tailored_cv.professional_summary}</p>
-                  <List title="Bullets" items={result.tailored_cv.tailored_bullets} />
-                  <List title="Do Not Claim" items={result.tailored_cv.do_not_claim} />
+              {resultWarning && (
+                <div className="rounded-md border border-amber-300/30 bg-amber-300/10 p-3 text-sm text-amber-100">
+                  {resultWarning}
+                </div>
+              )}
+
+              {analysis ? (
+                <Panel title="Fit Analysis">
+                  <div className="mb-3 text-4xl font-semibold text-cyan-300">
+                    {analysis.fit_score ?? "No score"}
+                    <span className="text-base text-slate-500"> / 100</span>
+                  </div>
+                  <p className="text-sm text-slate-300">{analysis.summary}</p>
+                  <List title="Matched" items={analysis.matched_skills} />
+                  <List title="Weak Signals" items={analysis.missing_or_weak_signals} />
+                </Panel>
+              ) : (
+                <Panel title="Model Output">
+                  <p className="mb-3 text-sm text-slate-300">
+                    The model did not return the structured score this page expects. Try Generate Pack again, or use
+                    the raw output below.
+                  </p>
+                  <pre className="max-h-[420px] overflow-auto whitespace-pre-wrap rounded-md border border-slate-800 bg-slate-950/70 p-3 text-xs leading-5 text-slate-400">
+                    {formatRawCareerResult(result)}
+                  </pre>
                 </Panel>
               )}
 
-              {result.cover_letter && (
+              {tailoredCv && (
+                <Panel title="Tailored CV">
+                  <p className="mb-3 text-sm font-medium text-white">{tailoredCv.headline}</p>
+                  <p className="text-sm text-slate-300">{tailoredCv.professional_summary}</p>
+                  <List title="Bullets" items={tailoredCv.tailored_bullets} />
+                  <List title="Do Not Claim" items={tailoredCv.do_not_claim} />
+                </Panel>
+              )}
+
+              {coverLetter && (
                 <Panel title="Cover Letter">
-                  <pre className="whitespace-pre-wrap text-sm leading-6 text-slate-300">{result.cover_letter.cover_letter}</pre>
+                  <pre className="whitespace-pre-wrap text-sm leading-6 text-slate-300">{coverLetter.cover_letter}</pre>
                 </Panel>
               )}
             </div>
@@ -208,12 +1038,223 @@ export default function CareerPage() {
   );
 }
 
+function getCareerAnalysis(result: any): CareerAnalysis | null {
+  const candidates = [result?.analysis, result?.application_pack?.analysis];
+  const analysis = candidates.find(
+    (item) =>
+      item &&
+      typeof item === "object" &&
+      ("fit_score" in item || "summary" in item || "matched_skills" in item),
+  );
+  if (!analysis) return null;
+  return {
+    ...analysis,
+    matched_skills: normalizeStringArray(analysis.matched_skills),
+    missing_or_weak_signals: normalizeStringArray(analysis.missing_or_weak_signals),
+  };
+}
+
+function readLocalCareerPreferences(): Record<string, string> {
+  if (typeof window === "undefined") return {};
+  try {
+    const raw = window.localStorage.getItem("career-search-criteria");
+    const parsed = raw ? JSON.parse(raw) : {};
+    if (!parsed || typeof parsed !== "object") return {};
+    return Object.fromEntries(
+      Object.entries(parsed).filter(([key, value]) => {
+        if (key === "remote" || key === "match_mode") return Boolean(value);
+        return typeof value === "string" && value.trim().length > 0;
+      }),
+    ) as Record<string, string>;
+  } catch {
+    return {};
+  }
+}
+
+function readLocalCareerProfile(): string {
+  if (typeof window === "undefined") return "";
+  return window.localStorage.getItem("career-profile") || "";
+}
+
+function matchModeLabel(mode: string): string {
+  const labels: Record<string, string> = {
+    both: "profile + criteria",
+    profile: "profile only",
+    criteria: "criteria only",
+  };
+  return labels[mode] || "profile + criteria";
+}
+
+function getTailoredCv(result: any) {
+  const tailoredCv = result?.tailored_cv || result?.application_pack?.tailored_cv;
+  if (!tailoredCv || typeof tailoredCv !== "object") return null;
+  return {
+    ...tailoredCv,
+    tailored_bullets: normalizeStringArray(tailoredCv.tailored_bullets),
+    do_not_claim: normalizeStringArray(tailoredCv.do_not_claim),
+  };
+}
+
+function getCoverLetter(result: any) {
+  const coverLetter = result?.cover_letter || result?.application_pack?.cover_letter;
+  return coverLetter && typeof coverLetter === "object" ? coverLetter : null;
+}
+
+function getResultWarning(result: any): string {
+  return result?.warning || result?.analysis?.warning || result?.application_pack?.warning || "";
+}
+
+function normalizeStringArray(value: unknown): string[] {
+  return Array.isArray(value) ? value.map((item) => String(item)).filter(Boolean) : [];
+}
+
+function formatRawCareerResult(result: any): string {
+  const raw = result?.application_pack || result?.analysis || result;
+  return typeof raw === "string" ? raw : JSON.stringify(raw, null, 2);
+}
+
+function jobBelongsToTab(job: CareerJob, tab: CareerTab): boolean {
+  if (tab === "found") {
+    return isSearchJob(job)
+      && ["found", "scored", "opened"].includes(job.status)
+      && (typeof job.fit_score !== "number" || job.fit_score < MIN_MATCH_SCORE);
+  }
+  if (tab === "applied") return job.status === "applied";
+  if (tab === "skipped") return job.status === "skipped";
+  if (tab === "saved") return job.status === "saved";
+  return ["scored", "opened"].includes(job.status) && typeof job.fit_score === "number" && job.fit_score >= MIN_MATCH_SCORE;
+}
+
+function isSearchJob(job: CareerJob): boolean {
+  return ["adzuna", "reed", "remotive", "arbeitnow", "search"].includes(job.source);
+}
+
+function mergeJobs(newJobs: CareerJob[], currentJobs: CareerJob[]): CareerJob[] {
+  const seen = new Set<string>();
+  return [...newJobs, ...currentJobs].filter((job) => {
+    const key = job.id || job.url;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+function statusLabel(status: string): string {
+  const labels: Record<string, string> = {
+    found: "Found",
+    saved: "Saved",
+    scored: "Match",
+    opened: "Reviewing",
+    applied: "Applied",
+    skipped: "Skipped",
+  };
+  return labels[status] || status;
+}
+
+function jobWorkMode(job: CareerJob): WorkModeFilter | "unknown" {
+  const text = `${job.title} ${job.location} ${job.description}`.toLowerCase();
+  if (/\bhybrid\b/.test(text)) return "hybrid";
+  if (/\b(remote|work from home|home[- ]based|distributed)\b/.test(text)) return "remote";
+  if (/\b(on[- ]?site|office[- ]based|in[- ]office)\b/.test(text)) return "onsite";
+  if (job.location.trim() && !/\b(remote|worldwide|anywhere)\b/.test(job.location.toLowerCase())) return "onsite";
+  return "unknown";
+}
+
+function workModeLabel(mode: WorkModeFilter | "unknown"): string {
+  const labels: Record<WorkModeFilter | "unknown", string> = {
+    all: "All",
+    remote: "Remote",
+    hybrid: "Hybrid",
+    onsite: "On-site",
+    unknown: "Unspecified",
+  };
+  return labels[mode];
+}
+
+function compareMatchJobs(left: CareerJob, right: CareerJob, sort: MatchSort): number {
+  const leftDate = left.created_at || left.updated_at || 0;
+  const rightDate = right.created_at || right.updated_at || 0;
+  if (sort === "newest") return rightDate - leftDate;
+  if (sort === "oldest") return leftDate - rightDate;
+  return (right.fit_score || 0) - (left.fit_score || 0) || rightDate - leftDate;
+}
+
+function JobMatchDetails({ analysis }: { analysis?: CareerAnalysis | null }) {
+  if (!analysis) return null;
+  const matched = normalizeStringArray(analysis.matched_skills);
+  const missing = normalizeStringArray(analysis.missing_or_weak_signals);
+  if (!analysis.summary && !matched.length && !missing.length) return null;
+
+  return (
+    <div className="mb-3 border-t border-slate-800/80 pt-3">
+      {analysis.summary && (
+        <div className="mb-4">
+          <div className="mb-1 text-xs font-semibold uppercase tracking-wide text-slate-500">Score reasoning</div>
+          <p className="text-sm leading-6 text-slate-300">{analysis.summary}</p>
+        </div>
+      )}
+      <div className="grid gap-4 md:grid-cols-2">
+        <SignalList title="Matched skills" items={matched} tone="positive" />
+        <SignalList title="Missing or weak" items={missing} tone="warning" />
+      </div>
+    </div>
+  );
+}
+
+function SignalList({
+  title,
+  items,
+  tone,
+}: {
+  title: string;
+  items: string[];
+  tone: "positive" | "warning";
+}) {
+  if (!items.length) return null;
+  return (
+    <div>
+      <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">{title}</div>
+      <ul className="space-y-1.5 text-xs leading-5 text-slate-300">
+        {items.map((item, index) => (
+          <li key={`${item}-${index}`} className="flex items-start gap-2">
+            <span className={`mt-2 h-1.5 w-1.5 shrink-0 rounded-full ${tone === "positive" ? "bg-emerald-300" : "bg-amber-300"}`} />
+            <span>{item}</span>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
 function Panel({ title, children }: { title: string; children: ReactNode }) {
   return (
     <div className="app-panel soft-fade-in rounded-md p-4">
       <h2 className="mb-3 text-sm font-semibold text-white">{title}</h2>
       {children}
     </div>
+  );
+}
+
+function StatusButton({
+  icon,
+  label,
+  loading,
+  onClick,
+}: {
+  icon: ReactNode;
+  label: string;
+  loading: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      disabled={loading}
+      className="inline-flex items-center gap-1.5 rounded-md border border-slate-700 bg-slate-950/50 px-2.5 py-1.5 text-xs text-slate-200 transition hover:border-cyan-400 hover:text-cyan-100 disabled:opacity-50"
+    >
+      {loading ? <Loader2 size={13} className="animate-spin" /> : icon}
+      {label}
+    </button>
   );
 }
 

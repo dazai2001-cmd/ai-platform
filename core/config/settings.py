@@ -29,6 +29,17 @@ class Settings:
         **DEFAULT_TASK_MODEL_MAP,
         **json.loads(os.getenv("TASK_MODELS_JSON", "{}")),
     }
+    OPENAI_COMPAT_BASE_URL = (os.getenv("OPENAI_COMPAT_BASE_URL") or "https://zenmux.ai/api/v1").rstrip("/")
+    OPENAI_COMPAT_API_KEY = os.getenv("OPENAI_COMPAT_API_KEY", "").strip()
+    OPENAI_COMPAT_MODELS = [
+        model.strip()
+        for model in os.getenv("OPENAI_COMPAT_MODELS", MODEL_GLM_52).split(",")
+        if model.strip()
+    ]
+    OPENAI_COMPAT_TIMEOUT_SECONDS = int(os.getenv("OPENAI_COMPAT_TIMEOUT_SECONDS", "180"))
+    OPENAI_COMPAT_MIN_TOKENS = int(os.getenv("OPENAI_COMPAT_MIN_TOKENS", "4096"))
+    OPENAI_COMPAT_FALLBACK_MODEL = os.getenv("OPENAI_COMPAT_FALLBACK_MODEL", MODEL_QWEN).strip()
+    OPENAI_COMPAT_COOLDOWN_SECONDS = int(os.getenv("OPENAI_COMPAT_COOLDOWN_SECONDS", "300"))
 
     # Embeddings
     EMBED_MODEL = os.getenv("EMBED_MODEL", DEFAULT_EMBED_MODEL)
@@ -51,6 +62,11 @@ class Settings:
     UPLOAD_PATH = os.getenv("UPLOAD_PATH", "data/uploads")
     BI_MANIFEST_PATH = os.getenv("BI_MANIFEST_PATH", "data/processed/bi_datasets.json")
     SQLITE_PATH = os.getenv("SQLITE_PATH", "data/processed/app.db")
+
+    # Career search providers
+    ADZUNA_APP_ID = os.getenv("ADZUNA_APP_ID", "").strip()
+    ADZUNA_APP_KEY = os.getenv("ADZUNA_APP_KEY", "").strip()
+    REED_API_KEY = os.getenv("REED_API_KEY", "").strip()
 
 
 settings = Settings()

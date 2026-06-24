@@ -110,14 +110,17 @@ export default function SettingsPage() {
 
       <div className="grid gap-4 lg:grid-cols-[1fr_1fr]">
         <section className="rounded-md border border-slate-800 bg-slate-900/70 p-5">
-          <h2 className="mb-4 text-sm font-semibold text-slate-200">Ollama</h2>
+          <h2 className="mb-4 text-sm font-semibold text-slate-200">Model Providers</h2>
           <div className="mb-4 flex items-center gap-2">
-            {health?.ollama ? (
+            {health?.ollama || health?.cloud_models ? (
               <CheckCircle size={17} className="text-emerald-300" />
             ) : (
               <XCircle size={17} className="text-rose-300" />
             )}
-            <span className="text-sm text-slate-300">{health?.ollama ? "Connected" : "Not reachable"}</span>
+            <span className="text-sm text-slate-300">
+              {health?.ollama ? "Ollama connected" : "Ollama not reachable"}
+              {health?.cloud_models ? " + cloud models configured" : ""}
+            </span>
           </div>
           <div className="flex flex-wrap gap-2">
             {health?.models?.length ? (
