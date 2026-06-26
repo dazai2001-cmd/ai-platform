@@ -181,6 +181,24 @@ class CloudProviderTests(unittest.TestCase):
         self.assertEqual(post.call_args.kwargs["headers"]["Authorization"], "Bearer test-key")
         self.assertEqual(post.call_args.kwargs["json"]["model"], "google/gemini-2.0-flash-exp:free")
 
+    def test_cloud_model_settings_reject_local_ollama_models(self):
+        from services.settings.model_settings_service import ModelSettingsService
+
+        service = ModelSettingsService()
+        user_id = f"cloud-model-user-{uuid.uuid4().hex}"
+        with (
+            patch.object(settings, "IS_CLOUD_RUNTIME", True),
+            patch.object(settings, "CLOUD_DEFAULT_MODEL", "gemini:gemini-2.0-flash"),
+            patch.object(settings, "GEMINI_API_KEY", "test-key"),
+            patch.object(settings, "GEMINI_MODELS", ["gemini-2.0-flash"]),
+            patch.object(settings, "OPENROUTER_API_KEY", ""),
+            patch.object(settings, "OPENROUTER_MODELS", []),
+        ):
+            models = service.update({"general": "mistral:latest", "rag": "gemini:gemini-2.0-flash"}, user_id=user_id)
+
+        self.assertEqual(models["general"], "gemini:gemini-2.0-flash")
+        self.assertEqual(models["rag"], "gemini:gemini-2.0-flash")
+
 
 class AuthFlowTests(unittest.TestCase):
     def test_email_verification_is_required_before_login(self):

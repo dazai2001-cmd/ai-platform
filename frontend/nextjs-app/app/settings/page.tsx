@@ -42,6 +42,8 @@ export default function SettingsPage() {
 
   const taskModels = modelSettings?.task_models || health?.task_models || {};
   const availableModels = modelSettings?.available_models || health?.models || [];
+  const runtime = health?.runtime || (health?.cloud_models ? "cloud" : "local");
+  const isCloud = runtime === "cloud";
 
   const persistTaskModels = async (nextTaskModels: Record<string, string>) => {
     const requestId = saveRequestRef.current + 1;
@@ -110,15 +112,18 @@ export default function SettingsPage() {
 
       <div className="grid gap-4 lg:grid-cols-[1fr_1fr]">
         <section className="rounded-md border border-slate-800 bg-slate-900/70 p-5">
-          <h2 className="mb-4 text-sm font-semibold text-slate-200">Ollama</h2>
+          <h2 className="mb-4 text-sm font-semibold text-slate-200">{isCloud ? "Cloud Models" : "Ollama"}</h2>
           <div className="mb-4 flex items-center gap-2">
-            {health?.ollama ? (
+            {health?.status === "ok" ? (
               <CheckCircle size={17} className="text-emerald-300" />
             ) : (
               <XCircle size={17} className="text-rose-300" />
             )}
-            <span className="text-sm text-slate-300">{health?.ollama ? "Connected" : "Not reachable"}</span>
+            <span className="text-sm text-slate-300">
+              {health?.status === "ok" ? (isCloud ? "Cloud runtime ready" : "Connected") : "Not reachable"}
+            </span>
           </div>
+          <p className="mb-3 text-xs uppercase tracking-wide text-slate-600">Runtime: {runtime}</p>
           <div className="flex flex-wrap gap-2">
             {health?.models?.length ? (
               health.models.map((m: string) => (

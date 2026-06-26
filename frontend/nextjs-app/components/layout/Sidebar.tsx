@@ -5,6 +5,8 @@ import { usePathname } from "next/navigation";
 import { Activity, BarChart2, Brain, BriefcaseBusiness, Files, LogOut, MessageSquareText, Settings, SquareStack, UserCircle } from "lucide-react";
 import clsx from "clsx";
 import { useAuth } from "@/lib/auth";
+import { api } from "@/lib/api";
+import { useEffect, useState } from "react";
 
 const nav = [
   { href: "/chat", label: "Chat", icon: MessageSquareText, desc: "General" },
@@ -20,17 +22,46 @@ const nav = [
 export default function Sidebar() {
   const path = usePathname();
   const { authRequired, loading, logout, user } = useAuth();
+  const [runtime, setRuntime] = useState("local");
+
+  useEffect(() => {
+    let cancelled = false;
+    api.health()
+      .then((health) => {
+        if (!cancelled) setRuntime(health.runtime || (health.cloud_models ? "cloud" : "local"));
+      })
+      .catch(() => {
+        if (!cancelled) setRuntime(process.env.NEXT_PUBLIC_AUTH_REQUIRED === "true" ? "cloud" : "local");
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const isCloud = runtime === "cloud";
 
   return (
     <aside className="sticky top-0 z-20 border-b border-slate-800/70 bg-slate-950/86 px-3 py-3 shadow-2xl shadow-slate-950/20 backdrop-blur-xl lg:h-screen lg:w-64 lg:shrink-0 lg:border-b-0 lg:border-r lg:px-4 lg:py-6">
       <div className="mb-3 flex items-center justify-between gap-3 px-1 lg:mb-8 lg:block lg:px-2">
         <div>
           <div className="text-base font-semibold tracking-normal text-white lg:text-xl">AI Platform</div>
-          <div className="text-xs text-slate-500">Local Ollama workspace</div>
+          <div className="text-xs text-slate-500">{isCloud ? "Cloud AI workspace" : "Local Ollama workspace"}</div>
         </div>
-        <span className="inline-flex items-center gap-1.5 rounded-full border border-emerald-400/25 bg-emerald-400/10 px-2 py-1 text-xs text-emerald-200 lg:mt-3 lg:inline-flex">
-          <span className="h-1.5 w-1.5 rounded-full bg-emerald-300 shadow-[0_0_12px_rgba(110,231,183,0.9)]" />
-          Local
+        <span
+          className={clsx(
+            "inline-flex items-center gap-1.5 rounded-full border px-2 py-1 text-xs lg:mt-3 lg:inline-flex",
+            isCloud
+              ? "border-cyan-300/25 bg-cyan-400/10 text-cyan-100"
+              : "border-emerald-400/25 bg-emerald-400/10 text-emerald-200"
+          )}
+        >
+          <span
+            className={clsx(
+              "h-1.5 w-1.5 rounded-full",
+              isCloud ? "bg-cyan-300 shadow-[0_0_12px_rgba(103,232,249,0.9)]" : "bg-emerald-300 shadow-[0_0_12px_rgba(110,231,183,0.9)]"
+            )}
+          />
+          {isCloud ? "Cloud" : "Local"}
         </span>
       </div>
 

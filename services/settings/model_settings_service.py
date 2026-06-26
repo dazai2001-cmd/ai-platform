@@ -9,6 +9,21 @@ class ModelSettingsService:
             return {task: settings.CLOUD_DEFAULT_MODEL for task in DEFAULT_CLOUD_TASK_MODEL_MAP}
         return DEFAULT_TASK_MODEL_MAP
 
+    def _available_models(self) -> set[str]:
+        if not settings.IS_CLOUD_RUNTIME:
+            return set()
+        models = []
+        if settings.GEMINI_API_KEY:
+            models.extend(f"gemini:{model}" for model in settings.GEMINI_MODELS)
+        if settings.OPENROUTER_API_KEY:
+            models.extend(f"openrouter:{model}" for model in settings.OPENROUTER_MODELS)
+        return set(models)
+
+    def _valid_model(self, model: str) -> bool:
+        if not settings.IS_CLOUD_RUNTIME:
+            return bool(model)
+        return model in self._available_models()
+
     def __init__(self):
         self._apply_saved()
 
@@ -22,7 +37,7 @@ class ModelSettingsService:
             )
         }
         for task, model in saved.items():
-            if task in DEFAULT_TASK_MODEL_MAP and model:
+            if task in self._defaults() and self._valid_model(model):
                 models[task] = model
         return models
 
@@ -30,7 +45,7 @@ class ModelSettingsService:
         clean = {
             task: model.strip()
             for task, model in task_models.items()
-            if task in self._defaults() and isinstance(model, str) and model.strip()
+            if task in self._defaults() and isinstance(model, str) and self._valid_model(model.strip())
         }
         if not clean:
             return self.get(user_id=user_id)
@@ -57,7 +72,8 @@ class ModelSettingsService:
         return self.get(user_id=user_id)
 
     def model_for(self, task: str, user_id: str = "local") -> str:
-        return self.get(user_id=user_id).get(task) or self.get(user_id=user_id).get("general")
+        models = self.get(user_id=user_id)
+        return models.get(task) or models.get("general")
 
     def _apply_saved(self):
         saved = {
@@ -67,7 +83,7 @@ class ModelSettingsService:
         clean = {
             task: model
             for task, model in saved.items()
-            if task in self._defaults() and model
+            if task in self._defaults() and self._valid_model(model)
         }
         settings.TASK_MODELS.update(clean)
         db.execute_many([
