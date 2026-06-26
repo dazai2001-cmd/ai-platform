@@ -1,4 +1,7 @@
 import io
+import os
+import subprocess
+import sys
 import unittest
 import uuid
 from pathlib import Path
@@ -129,6 +132,23 @@ class ModelRoutingTests(unittest.TestCase):
 
 
 class CloudProviderTests(unittest.TestCase):
+    def test_settings_import_in_cloud_runtime(self):
+        env = {
+            **os.environ,
+            "AI_RUNTIME": "cloud",
+            "GEMINI_API_KEY": "test-key",
+            "GEMINI_MODELS": "gemini-2.0-flash",
+        }
+        result = subprocess.run(
+            [sys.executable, "-c", "from core.config.settings import settings; print(settings.TASK_MODELS['general'])"],
+            capture_output=True,
+            text=True,
+            env=env,
+            timeout=15,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.strip(), "gemini:gemini-2.0-flash")
+
     def test_gemini_generate_uses_generate_content_api(self):
         class Response:
             def raise_for_status(self):

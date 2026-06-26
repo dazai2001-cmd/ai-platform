@@ -53,9 +53,10 @@ class Settings:
 
     # Models
     ROUTER_MODEL = os.getenv("ROUTER_MODEL", CLOUD_DEFAULT_MODEL if IS_CLOUD_RUNTIME else MODEL_QWEN)
+    TASK_MODEL_OVERRIDES = json.loads(os.getenv("CLOUD_TASK_MODELS_JSON" if IS_CLOUD_RUNTIME else "TASK_MODELS_JSON", "{}"))
     TASK_MODELS = {
-        **({task: CLOUD_DEFAULT_MODEL for task in DEFAULT_CLOUD_TASK_MODEL_MAP} if IS_CLOUD_RUNTIME else DEFAULT_TASK_MODEL_MAP),
-        **json.loads(os.getenv("TASK_MODELS_JSON", "{}")),
+        **(dict.fromkeys(DEFAULT_CLOUD_TASK_MODEL_MAP, CLOUD_DEFAULT_MODEL) if IS_CLOUD_RUNTIME else DEFAULT_TASK_MODEL_MAP),
+        **TASK_MODEL_OVERRIDES,
     }
 
     # Embeddings
