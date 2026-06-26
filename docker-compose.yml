@@ -5,6 +5,11 @@ services:
       - "127.0.0.1:5000:5000"
     environment:
       - OLLAMA_BASE_URL=http://host.docker.internal:11434
+      - AI_RUNTIME=${AI_RUNTIME:-local}
+      - GEMINI_API_KEY=${GEMINI_API_KEY:-}
+      - GEMINI_MODELS=${GEMINI_MODELS:-gemini-2.0-flash}
+      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY:-}
+      - OPENROUTER_MODELS=${OPENROUTER_MODELS:-}
       - REDIS_URL=redis://redis:6379
       - DEBUG=false
       - CORS_ORIGINS=http://localhost:3000,http://127.0.0.1:3000

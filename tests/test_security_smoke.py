@@ -16,6 +16,7 @@ from services.career.career_service import CareerService
 from services.auth.auth_service import AuthError, auth_service
 from services.chat.conversation_service import conversations
 from services.memory.memory_service import memory
+from infrastructure.llm.ollama_client import ollama
 
 
 class UploadValidationTests(unittest.TestCase):
@@ -125,6 +126,40 @@ class ModelRoutingTests(unittest.TestCase):
         finally:
             settings.TASK_MODELS.clear()
             settings.TASK_MODELS.update(original)
+
+
+class CloudProviderTests(unittest.TestCase):
+    def test_gemini_generate_uses_generate_content_api(self):
+        class Response:
+            def raise_for_status(self):
+                return None
+
+            def json(self):
+                return {"candidates": [{"content": {"parts": [{"text": "hello"}]}}]}
+
+        with patch.object(settings, "GEMINI_API_KEY", "test-key"), patch("infrastructure.llm.ollama_client.requests.post", return_value=Response()) as post:
+            answer = ollama.generate("gemini:gemini-2.0-flash", "Say hello", max_tokens=12)
+
+        self.assertEqual(answer, "hello")
+        self.assertIn("/models/gemini-2.0-flash:generateContent", post.call_args.args[0])
+        self.assertEqual(post.call_args.kwargs["params"]["key"], "test-key")
+        self.assertEqual(post.call_args.kwargs["json"]["contents"][0]["parts"][0]["text"], "Say hello")
+
+    def test_openrouter_generate_uses_chat_completions_api(self):
+        class Response:
+            def raise_for_status(self):
+                return None
+
+            def json(self):
+                return {"choices": [{"message": {"content": "hi"}}]}
+
+        with patch.object(settings, "OPENROUTER_API_KEY", "test-key"), patch("infrastructure.llm.ollama_client.requests.post", return_value=Response()) as post:
+            answer = ollama.generate("openrouter:google/gemini-2.0-flash-exp:free", "Say hi", max_tokens=12)
+
+        self.assertEqual(answer, "hi")
+        self.assertEqual(post.call_args.args[0], f"{settings.OPENROUTER_BASE_URL}/chat/completions")
+        self.assertEqual(post.call_args.kwargs["headers"]["Authorization"], "Bearer test-key")
+        self.assertEqual(post.call_args.kwargs["json"]["model"], "google/gemini-2.0-flash-exp:free")
 
 
 class AuthFlowTests(unittest.TestCase):

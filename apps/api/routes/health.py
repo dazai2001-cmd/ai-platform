@@ -17,7 +17,9 @@ def health():
     models = ollama.list_models() if ollama_ok else []
     return jsonify({
         "status": "ok" if ollama_ok else "degraded",
-        "ollama": ollama_ok,
+        "runtime": settings.AI_RUNTIME,
+        "ollama": ollama_ok if not settings.IS_CLOUD_RUNTIME else False,
+        "cloud_models": settings.IS_CLOUD_RUNTIME,
         "models": models,
         "task_models": model_settings.get(user_id=current_user_id()),
         "router_model": settings.ROUTER_MODEL,

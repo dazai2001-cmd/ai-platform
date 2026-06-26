@@ -21,16 +21,40 @@ class Settings:
     AUTH_SESSION_DAYS = int(os.getenv("AUTH_SESSION_DAYS", "14"))
     AUTH_VERIFICATION_HOURS = int(os.getenv("AUTH_VERIFICATION_HOURS", "24"))
     APP_PUBLIC_URL = os.getenv("APP_PUBLIC_URL", "http://127.0.0.1:3000").rstrip("/")
+    AI_RUNTIME = os.getenv("AI_RUNTIME", "local").strip().lower()
+    IS_CLOUD_RUNTIME = AI_RUNTIME == "cloud"
 
     # Ollama
     OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://host.docker.internal:11434")
     OLLAMA_TIMEOUT_SECONDS = int(os.getenv("OLLAMA_TIMEOUT_SECONDS", "180"))
     LLM_MAX_TOKENS = int(os.getenv("LLM_MAX_TOKENS", "768"))
 
+    # Cloud LLM providers
+    GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "").strip()
+    GEMINI_BASE_URL = os.getenv("GEMINI_BASE_URL", "https://generativelanguage.googleapis.com/v1beta").rstrip("/")
+    GEMINI_MODELS = [
+        model.strip()
+        for model in os.getenv("GEMINI_MODELS", "gemini-2.0-flash").split(",")
+        if model.strip()
+    ]
+    OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "").strip()
+    OPENROUTER_BASE_URL = os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1").rstrip("/")
+    OPENROUTER_MODELS = [
+        model.strip()
+        for model in os.getenv("OPENROUTER_MODELS", "").split(",")
+        if model.strip()
+    ]
+    CLOUD_DEFAULT_MODEL = (
+        os.getenv("CLOUD_DEFAULT_MODEL", "").strip()
+        or (f"gemini:{GEMINI_MODELS[0]}" if GEMINI_API_KEY and GEMINI_MODELS else "")
+        or (f"openrouter:{OPENROUTER_MODELS[0]}" if OPENROUTER_API_KEY and OPENROUTER_MODELS else "")
+        or MODEL_GEMINI_FLASH
+    )
+
     # Models
-    ROUTER_MODEL = os.getenv("ROUTER_MODEL", MODEL_QWEN)
+    ROUTER_MODEL = os.getenv("ROUTER_MODEL", CLOUD_DEFAULT_MODEL if IS_CLOUD_RUNTIME else MODEL_QWEN)
     TASK_MODELS = {
-        **DEFAULT_TASK_MODEL_MAP,
+        **({task: CLOUD_DEFAULT_MODEL for task in DEFAULT_CLOUD_TASK_MODEL_MAP} if IS_CLOUD_RUNTIME else DEFAULT_TASK_MODEL_MAP),
         **json.loads(os.getenv("TASK_MODELS_JSON", "{}")),
     }
 

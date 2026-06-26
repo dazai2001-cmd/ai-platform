@@ -408,3 +408,37 @@ It also improved my ability to use AI-assisted development tools such as Codex a
 
 - GitHub: [dazai2001-cmd](https://github.com/dazai2001-cmd)
 - LinkedIn: [Rahul Stanly Keecheril](https://www.linkedin.com/in/rahul-stanly-keecheril-77b455178/)
+## Cloud deployment notes
+
+For local development, keep `AI_RUNTIME=local` and use Ollama models such as
+`qwen3:8b`, `llama3:latest`, and `mistral:latest`.
+
+For Render or another hosted backend, set `AI_RUNTIME=cloud`. In cloud mode the
+API hides Ollama models and routes LLM calls to Gemini/OpenRouter model IDs:
+
+```env
+AI_RUNTIME=cloud
+AUTH_REQUIRED=true
+APP_PUBLIC_URL=https://symphonious-cat-2873fe.netlify.app
+CORS_ORIGINS=https://symphonious-cat-2873fe.netlify.app
+
+GEMINI_API_KEY=...
+GEMINI_MODELS=gemini-2.0-flash
+
+OPENROUTER_API_KEY=...
+OPENROUTER_MODELS=google/gemini-2.0-flash-exp:free
+```
+
+Model IDs shown to the app are provider-prefixed:
+
+```text
+gemini:gemini-2.0-flash
+openrouter:google/gemini-2.0-flash-exp:free
+```
+
+Frontend-only variables belong in Netlify:
+
+```env
+NEXT_PUBLIC_API_URL=https://your-render-service.onrender.com
+NEXT_PUBLIC_AUTH_REQUIRED=true
+```
