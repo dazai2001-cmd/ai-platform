@@ -31,7 +31,18 @@ class OllamaClient:
     ) -> str:
         provider, provider_model = self._provider_for(model)
         if provider == "gemini":
-            return self._generate_gemini(provider_model, prompt, temperature, max_tokens, json_format)
+            try:
+                return self._generate_gemini(provider_model, prompt, temperature, max_tokens, json_format)
+            except RuntimeError as e:
+                if self._can_fallback_to_openrouter(e):
+                    return self._generate_openrouter(
+                        settings.OPENROUTER_MODELS[0],
+                        prompt,
+                        temperature,
+                        max_tokens,
+                        json_format,
+                    )
+                raise
         if provider == "openrouter":
             return self._generate_openrouter(provider_model, prompt, temperature, max_tokens, json_format)
 
@@ -58,7 +69,7 @@ class OllamaClient:
             r.raise_for_status()
             return r.json()["response"]
         except requests.exceptions.RequestException as e:
-            raise RuntimeError(f"Ollama request failed: {e}") from e
+            raise RuntimeError(self._safe_provider_error("Ollama", e)) from e
 
     def stream(self, model: str, prompt: str, temperature: float = 0.2) -> Iterator[str]:
         provider, provider_model = self._provider_for(model)
@@ -150,7 +161,7 @@ class OllamaClient:
             parts = data.get("candidates", [{}])[0].get("content", {}).get("parts", [])
             return "".join(part.get("text", "") for part in parts).strip()
         except requests.exceptions.RequestException as e:
-            raise RuntimeError(f"Gemini request failed: {e}") from e
+            raise RuntimeError(self._safe_provider_error("Gemini", e)) from e
 
     def _generate_openrouter(
         self,
@@ -186,7 +197,22 @@ class OllamaClient:
             r.raise_for_status()
             return r.json()["choices"][0]["message"]["content"].strip()
         except requests.exceptions.RequestException as e:
-            raise RuntimeError(f"OpenRouter request failed: {e}") from e
+            raise RuntimeError(self._safe_provider_error("OpenRouter", e)) from e
+
+    def _can_fallback_to_openrouter(self, error: RuntimeError) -> bool:
+        if not settings.OPENROUTER_API_KEY or not settings.OPENROUTER_MODELS:
+            return False
+        return "429" in str(error) or "Too Many Requests" in str(error)
+
+    @staticmethod
+    def _safe_provider_error(provider: str, error: requests.exceptions.RequestException) -> str:
+        response = getattr(error, "response", None)
+        status = getattr(response, "status_code", None)
+        if status == 429:
+            return f"{provider} request failed (429 rate limit)."
+        if status:
+            return f"{provider} request failed ({status})."
+        return f"{provider} request failed."
 
 
 ollama = OllamaClient()

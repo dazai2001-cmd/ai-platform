@@ -1,5 +1,6 @@
 import io
 import os
+import requests
 import subprocess
 import sys
 import unittest
@@ -180,6 +181,50 @@ class CloudProviderTests(unittest.TestCase):
         self.assertEqual(post.call_args.args[0], f"{settings.OPENROUTER_BASE_URL}/chat/completions")
         self.assertEqual(post.call_args.kwargs["headers"]["Authorization"], "Bearer test-key")
         self.assertEqual(post.call_args.kwargs["json"]["model"], "google/gemini-2.0-flash-exp:free")
+
+    def test_gemini_rate_limit_falls_back_to_openrouter(self):
+        class RateLimitResponse:
+            status_code = 429
+
+            def raise_for_status(self):
+                raise requests.exceptions.HTTPError(response=self)
+
+        class OpenRouterResponse:
+            def raise_for_status(self):
+                return None
+
+            def json(self):
+                return {"choices": [{"message": {"content": "fallback ok"}}]}
+
+        with (
+            patch.object(settings, "GEMINI_API_KEY", "gemini-key"),
+            patch.object(settings, "OPENROUTER_API_KEY", "openrouter-key"),
+            patch.object(settings, "OPENROUTER_MODELS", ["google/gemini-2.0-flash-exp:free"]),
+            patch("infrastructure.llm.ollama_client.requests.post", side_effect=[RateLimitResponse(), OpenRouterResponse()]) as post,
+        ):
+            answer = ollama.generate("gemini:gemini-2.0-flash", "hello")
+
+        self.assertEqual(answer, "fallback ok")
+        self.assertEqual(post.call_args_list[1].kwargs["json"]["model"], "google/gemini-2.0-flash-exp:free")
+
+    def test_provider_errors_do_not_expose_api_keys(self):
+        class Response:
+            status_code = 429
+
+            def raise_for_status(self):
+                raise requests.exceptions.HTTPError(
+                    "429 Client Error: Too Many Requests for url: https://example.test?key=secret-key",
+                    response=self,
+                )
+
+        with (
+            patch.object(settings, "GEMINI_API_KEY", "secret-key"),
+            patch.object(settings, "OPENROUTER_API_KEY", ""),
+            patch.object(settings, "OPENROUTER_MODELS", []),
+            patch("infrastructure.llm.ollama_client.requests.post", return_value=Response()),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "Gemini request failed \\(429 rate limit\\)"):
+                ollama.generate("gemini:gemini-2.0-flash", "hello")
 
     def test_cloud_model_settings_reject_local_ollama_models(self):
         from services.settings.model_settings_service import ModelSettingsService
