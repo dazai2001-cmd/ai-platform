@@ -1,5 +1,6 @@
 const CONFIGURED_BASE = process.env.NEXT_PUBLIC_API_URL || "";
 const API_TOKEN = process.env.NEXT_PUBLIC_API_TOKEN || "";
+const AUTH_STORAGE_KEY = "ai_platform_auth_token";
 
 function baseUrl() {
   if (typeof window === "undefined") return CONFIGURED_BASE;
@@ -12,6 +13,10 @@ function headers(contentType?: string) {
   const h: Record<string, string> = {};
   if (contentType) h["Content-Type"] = contentType;
   if (API_TOKEN) h["X-API-Token"] = API_TOKEN;
+  if (typeof window !== "undefined") {
+    const authToken = window.localStorage.getItem(AUTH_STORAGE_KEY);
+    if (authToken) h.Authorization = `Bearer ${authToken}`;
+  }
   return h;
 }
 
@@ -56,6 +61,14 @@ async function upload(path: string, formData: FormData) {
 }
 
 export const api = {
+  authStorageKey: AUTH_STORAGE_KEY,
+  signup: (email: string, password: string) => post("/api/auth/signup", { email, password }),
+  login: (email: string, password: string) => post("/api/auth/login", { email, password }),
+  verifyEmail: (token: string) => get(`/api/auth/verify?token=${encodeURIComponent(token)}`),
+  resendVerification: (email: string) => post("/api/auth/resend-verification", { email }),
+  me: () => get("/api/auth/me"),
+  logout: () => post("/api/auth/logout", {}),
+
   // Chat (auto-routed)
   chat: (query: string, sessionId?: string, dataset?: string) =>
     post("/api/chat", { query, session_id: sessionId, dataset }),

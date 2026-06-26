@@ -13,17 +13,17 @@ class BIAgent:
     Uses Qwen for structured reasoning.
     """
 
-    def ask(self, question: str, session_id: str = None, dataset_name: str = None, model: str = None) -> dict:
+    def ask(self, question: str, session_id: str = None, dataset_name: str = None, model: str = None, user_id: str = "local") -> dict:
         session_id = session_id or str(uuid.uuid4())
         t0 = time.monotonic()
         model = model or settings.TASK_MODELS["bi"]
 
         try:
-            result = bi_pipeline.ask(question, dataset_name=dataset_name, model=model)
+            result = bi_pipeline.ask(question, dataset_name=dataset_name, model=model, user_id=user_id)
             result["session_id"] = session_id
 
-            memory.add(session_id, "user", question)
-            memory.add(session_id, "assistant", result.get("answer", ""))
+            memory.add(session_id, "user", question, user_id=user_id)
+            memory.add(session_id, "assistant", result.get("answer", ""), user_id=user_id)
 
             analytics.record(QueryEvent(
                 session_id=session_id,
@@ -46,17 +46,17 @@ class BIAgent:
             ))
             raise
 
-    def load_csv(self, path: str, name: str) -> dict:
-        return bi_pipeline.load_csv(path, name)
+    def load_csv(self, path: str, name: str, user_id: str = "local") -> dict:
+        return bi_pipeline.load_csv(path, name, user_id=user_id)
 
-    def load_excel(self, path: str, name: str) -> dict:
-        return bi_pipeline.load_excel(path, name)
+    def load_excel(self, path: str, name: str, user_id: str = "local") -> dict:
+        return bi_pipeline.load_excel(path, name, user_id=user_id)
 
-    def list_datasets(self) -> list[dict]:
-        return bi_pipeline.list_datasets()
+    def list_datasets(self, user_id: str = "local") -> list[dict]:
+        return bi_pipeline.list_datasets(user_id=user_id)
 
-    def get_sample(self, name: str) -> dict | None:
-        return bi_pipeline.get_sample(name)
+    def get_sample(self, name: str, user_id: str = "local") -> dict | None:
+        return bi_pipeline.get_sample(name, user_id=user_id)
 
 
 bi_agent = BIAgent()

@@ -26,28 +26,32 @@ class BIPipeline:
     # Data loading
     # ------------------------------------------------------------------
 
-    def load_csv(self, path: str, name: str) -> dict:
+    def _dataset_key(self, name: str, user_id: str = "local") -> str:
+        return f"{user_id}:{name}"
+
+    def load_csv(self, path: str, name: str, user_id: str = "local") -> dict:
         name = self._validate_name(name)
         df = pd.read_csv(path)
-        _datasets[name] = df
-        self._save_dataset_record(name, path, "csv")
+        _datasets[self._dataset_key(name, user_id)] = df
+        self._save_dataset_record(name, path, "csv", user_id=user_id)
         return {"name": name, "rows": len(df), "columns": list(df.columns)}
 
-    def load_excel(self, path: str, name: str) -> dict:
+    def load_excel(self, path: str, name: str, user_id: str = "local") -> dict:
         name = self._validate_name(name)
         df = pd.read_excel(path)
-        _datasets[name] = df
-        self._save_dataset_record(name, path, "excel")
+        _datasets[self._dataset_key(name, user_id)] = df
+        self._save_dataset_record(name, path, "excel", user_id=user_id)
         return {"name": name, "rows": len(df), "columns": list(df.columns)}
 
-    def list_datasets(self) -> list[dict]:
+    def list_datasets(self, user_id: str = "local") -> list[dict]:
         return [
-            {"name": n, "rows": len(df), "columns": list(df.columns)}
-            for n, df in _datasets.items()
+            {"name": key.split(":", 1)[1], "rows": len(df), "columns": list(df.columns)}
+            for key, df in _datasets.items()
+            if key.startswith(f"{user_id}:")
         ]
 
-    def get_sample(self, name: str) -> dict | None:
-        df = _datasets.get(name)
+    def get_sample(self, name: str, user_id: str = "local") -> dict | None:
+        df = _datasets.get(self._dataset_key(name, user_id))
         if df is None:
             return None
         return {
@@ -59,14 +63,16 @@ class BIPipeline:
     # Query
     # ------------------------------------------------------------------
 
-    def ask(self, question: str, dataset_name: str = None, model: str = None) -> dict:
+    def ask(self, question: str, dataset_name: str = None, model: str = None, user_id: str = "local") -> dict:
         model = model or settings.TASK_MODELS["bi"]
+        user_keys = [key for key in _datasets if key.startswith(f"{user_id}:")]
         # Pick dataset
-        name = dataset_name or (next(iter(_datasets)) if _datasets else None)
-        if not name or name not in _datasets:
+        display_name = dataset_name or (user_keys[0].split(":", 1)[1] if user_keys else None)
+        key = self._dataset_key(display_name, user_id) if display_name else None
+        if not key or key not in _datasets:
             return {"answer": "No dataset loaded. Please upload a CSV or Excel file first.", "chart": None}
 
-        df = _datasets[name]
+        df = _datasets[key]
         schema = self._schema(df)
         sample = df.head(5).to_string(index=False)
 
@@ -102,7 +108,7 @@ class BIPipeline:
             "rows": rows,
             "chart": chart,
             "model": model,
-            "dataset": name
+            "dataset": display_name
         }
 
     # ------------------------------------------------------------------
@@ -241,16 +247,17 @@ class BIPipeline:
         for record in records:
             try:
                 name = self._validate_name(record["name"])
+                user_id = record.get("user_id", "local")
                 path = record["path"]
                 kind = record["kind"]
                 if kind == "csv":
-                    _datasets[name] = pd.read_csv(path)
+                    _datasets[self._dataset_key(name, user_id)] = pd.read_csv(path)
                 elif kind == "excel":
-                    _datasets[name] = pd.read_excel(path)
+                    _datasets[self._dataset_key(name, user_id)] = pd.read_excel(path)
             except Exception:
                 continue
 
-    def _save_dataset_record(self, name: str, path: str, kind: str):
+    def _save_dataset_record(self, name: str, path: str, kind: str, user_id: str = "local"):
         _manifest.parent.mkdir(parents=True, exist_ok=True)
         records = []
         if _manifest.exists():
@@ -258,8 +265,8 @@ class BIPipeline:
                 records = json.loads(_manifest.read_text(encoding="utf-8"))
             except Exception:
                 records = []
-        records = [r for r in records if r.get("name") != name]
-        records.append({"name": name, "path": path, "kind": kind})
+        records = [r for r in records if not (r.get("name") == name and r.get("user_id", "local") == user_id)]
+        records.append({"name": name, "path": path, "kind": kind, "user_id": user_id})
         _manifest.write_text(json.dumps(records, indent=2), encoding="utf-8")
 
 

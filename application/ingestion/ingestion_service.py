@@ -29,21 +29,21 @@ class IngestionService:
         self.embedder = embedder
         self.store = store
 
-    def ingest_pdf(self, path: str, source: str = None) -> int:
+    def ingest_pdf(self, path: str, source: str = None, extra: dict = None) -> int:
         text = self._extract_pdf_text(path)
         if not text.strip():
             text = self._ocr_pdf_to_text(path)
-        return self._ingest_text(text, source=source or os.path.basename(path))
+        return self._ingest_text(text, source=source or os.path.basename(path), extra=extra)
 
-    def ingest_url(self, url: str) -> int:
+    def ingest_url(self, url: str, extra: dict = None) -> int:
         self._validate_public_url(url)
         html = self._read_limited_url(url)
         soup = BeautifulSoup(html, "html.parser")
         text = soup.get_text(separator=" ", strip=True)
-        return self._ingest_text(text, source=url, extra={"type": "url"})
+        return self._ingest_text(text, source=url, extra={"type": "url", **(extra or {})})
 
-    def ingest_text(self, text: str, source: str = "note") -> int:
-        return self._ingest_text(text, source=source, extra={"type": "note"})
+    def ingest_text(self, text: str, source: str = "note", extra: dict = None) -> int:
+        return self._ingest_text(text, source=source, extra={"type": "note", **(extra or {})})
 
     def ingest_folder(self, folder: str) -> dict:
         results = {}

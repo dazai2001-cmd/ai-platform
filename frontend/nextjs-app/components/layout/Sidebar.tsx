@@ -2,8 +2,9 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { Activity, BarChart2, Brain, BriefcaseBusiness, Files, MessageSquareText, Settings, SquareStack } from "lucide-react";
+import { Activity, BarChart2, Brain, BriefcaseBusiness, Files, LogOut, MessageSquareText, Settings, SquareStack, UserCircle } from "lucide-react";
 import clsx from "clsx";
+import { useAuth } from "@/lib/auth";
 
 const nav = [
   { href: "/chat", label: "Chat", icon: MessageSquareText, desc: "General" },
@@ -18,6 +19,7 @@ const nav = [
 
 export default function Sidebar() {
   const path = usePathname();
+  const { authRequired, loading, logout, user } = useAuth();
 
   return (
     <aside className="sticky top-0 z-20 border-b border-slate-800/70 bg-slate-950/86 px-3 py-3 shadow-2xl shadow-slate-950/20 backdrop-blur-xl lg:h-screen lg:w-64 lg:shrink-0 lg:border-b-0 lg:border-r lg:px-4 lg:py-6">
@@ -64,6 +66,31 @@ export default function Sidebar() {
           );
         })}
       </nav>
+
+      <div className="mt-3 border-t border-slate-800/70 pt-3 lg:mt-6">
+        {user ? (
+          <div className="flex items-center gap-2 rounded-md border border-slate-800 bg-slate-900/65 px-2 py-2 text-xs text-slate-300">
+            <UserCircle size={18} className="shrink-0 text-cyan-200" />
+            <span className="min-w-0 flex-1 truncate">{user.email}</span>
+            <button
+              type="button"
+              onClick={logout}
+              className="grid h-7 w-7 place-items-center rounded-md text-slate-500 transition hover:bg-slate-800 hover:text-white"
+              title="Sign out"
+            >
+              <LogOut size={15} />
+            </button>
+          </div>
+        ) : authRequired && !loading ? (
+          <Link
+            href="/auth"
+            className="flex items-center justify-center gap-2 rounded-md border border-cyan-300/20 bg-cyan-400/12 px-3 py-2 text-sm text-cyan-100 transition hover:bg-cyan-400/18"
+          >
+            <UserCircle size={16} />
+            Sign in
+          </Link>
+        ) : null}
+      </div>
     </aside>
   );
 }

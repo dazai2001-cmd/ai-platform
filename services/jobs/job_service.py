@@ -9,12 +9,13 @@ class JobService:
         self._jobs: dict[str, dict] = {}
         self._lock = threading.Lock()
 
-    def start(self, label: str, fn: Callable[[], dict | int | None]) -> dict:
+    def start(self, label: str, fn: Callable[[], dict | int | None], user_id: str = "local") -> dict:
         job_id = uuid.uuid4().hex
         now = time.time()
         job = {
             "id": job_id,
             "label": label,
+            "user_id": user_id,
             "status": "queued",
             "progress": 0,
             "message": "Queued",
@@ -30,9 +31,11 @@ class JobService:
         thread.start()
         return job
 
-    def get(self, job_id: str) -> dict | None:
+    def get(self, job_id: str, user_id: str = "local") -> dict | None:
         with self._lock:
             job = self._jobs.get(job_id)
+            if job and job.get("user_id", "local") != user_id:
+                return None
             return dict(job) if job else None
 
     def _update(self, job_id: str, **updates):

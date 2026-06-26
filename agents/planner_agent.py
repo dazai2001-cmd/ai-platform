@@ -49,7 +49,7 @@ class PlannerAgent:
             "reasoning": "fallback single step"
         }
 
-    def execute(self, query: str, session_id: str = None) -> dict:
+    def execute(self, query: str, session_id: str = None, user_id: str = "local") -> dict:
         """Plan and execute all steps, returning combined results."""
         from agents.rag_agent import rag_agent
         from agents.bi_agent import bi_agent
@@ -62,9 +62,9 @@ class PlannerAgent:
             question = step.get("question", query)
 
             if step_type == TASK_BI:
-                result = bi_agent.ask(question, session_id=session_id)
+                result = bi_agent.ask(question, session_id=session_id, user_id=user_id)
             else:
-                result = rag_agent.ask(question, session_id=session_id)
+                result = rag_agent.ask(question, session_id=session_id, user_id=user_id)
 
             results.append({"type": step_type, "result": result})
 

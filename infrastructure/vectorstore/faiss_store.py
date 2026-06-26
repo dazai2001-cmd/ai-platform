@@ -48,25 +48,29 @@ class FAISSStore:
             self.metadata = []
             self.save()
 
-    def search(self, query_vector: np.ndarray, k: int = 5) -> list[dict]:
+    def search(self, query_vector: np.ndarray, k: int = 5, user_id: str = None) -> list[dict]:
         query_vector = np.asarray(query_vector, dtype=np.float32)
 
         if len(query_vector.shape) == 1:
             query_vector = query_vector.reshape(1, -1)
 
-        k = min(k, self.index.ntotal)
-        if k == 0:
+        search_k = self.index.ntotal if user_id else min(k, self.index.ntotal)
+        if search_k == 0:
             return []
 
-        distances, indices = self.index.search(query_vector, k)
+        distances, indices = self.index.search(query_vector, search_k)
 
         results = []
         for i, idx in enumerate(indices[0]):
             if idx < len(self.metadata):
+                if user_id and self.metadata[idx].get("user_id", "local") != user_id:
+                    continue
                 results.append({
                     "metadata": self.metadata[idx],
                     "score": float(distances[0][i])
                 })
+                if len(results) >= k:
+                    break
         return results
 
     def clear(self):
@@ -74,13 +78,13 @@ class FAISSStore:
         self.metadata = []
         self.save()
 
-    def delete_by_source(self, source: str) -> int:
+    def delete_by_source(self, source: str, user_id: str = None) -> int:
         keep_vectors = []
         keep_metadata = []
         deleted = 0
 
         for idx, meta in enumerate(self.metadata):
-            if meta.get("source") == source:
+            if meta.get("source") == source and (user_id is None or meta.get("user_id", "local") == user_id):
                 deleted += 1
                 continue
             if idx < self.index.ntotal:

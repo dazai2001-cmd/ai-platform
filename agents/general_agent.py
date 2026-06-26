@@ -45,10 +45,10 @@ User request:
 
 
 class GeneralAgent:
-    def _prompt(self, query: str, session_id: str, model: str) -> str:
-        history = memory.to_llm_format(session_id)[-8:]
+    def _prompt(self, query: str, session_id: str, model: str, user_id: str = "local") -> str:
+        history = memory.to_llm_format(session_id, user_id=user_id)[-8:]
         history_text = "\n".join(f"{m.get('role', 'user')}: {m.get('content', '')}" for m in history)
-        facts_text = memory.facts_text()
+        facts_text = memory.facts_text(user_id=user_id)
         return _GENERAL_PROMPT.format(
             model=model,
             history=history_text or "No prior history.",
@@ -56,17 +56,17 @@ class GeneralAgent:
             query=query,
         )
 
-    def ask(self, query: str, session_id: str = None, model: str = None) -> dict:
+    def ask(self, query: str, session_id: str = None, model: str = None, user_id: str = "local") -> dict:
         session_id = session_id or str(uuid.uuid4())
         model = model or settings.TASK_MODELS["general"]
         t0 = time.monotonic()
 
-        prompt = self._prompt(query, session_id, model)
+        prompt = self._prompt(query, session_id, model, user_id=user_id)
 
         try:
             answer = ollama.generate(model, prompt, temperature=0.2)
-            memory.add(session_id, "user", query)
-            memory.add(session_id, "assistant", answer)
+            memory.add(session_id, "user", query, user_id=user_id)
+            memory.add(session_id, "assistant", answer, user_id=user_id)
 
             analytics.record(QueryEvent(
                 session_id=session_id,
@@ -95,10 +95,10 @@ class GeneralAgent:
             ))
             raise
 
-    def stream_ask(self, query: str, session_id: str = None, model: str = None):
+    def stream_ask(self, query: str, session_id: str = None, model: str = None, user_id: str = "local"):
         session_id = session_id or str(uuid.uuid4())
         model = model or settings.TASK_MODELS["general"]
-        prompt = self._prompt(query, session_id, model)
+        prompt = self._prompt(query, session_id, model, user_id=user_id)
         t0 = time.monotonic()
 
         def generate():
@@ -114,8 +114,8 @@ class GeneralAgent:
 
             answer = "".join(parts).strip()
             if answer:
-                memory.add(session_id, "user", query)
-                memory.add(session_id, "assistant", answer)
+                memory.add(session_id, "user", query, user_id=user_id)
+                memory.add(session_id, "assistant", answer, user_id=user_id)
 
             analytics.record(QueryEvent(
                 session_id=session_id,

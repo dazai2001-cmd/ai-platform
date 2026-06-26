@@ -1,5 +1,6 @@
 import io
 import unittest
+import uuid
 from pathlib import Path
 from unittest.mock import patch
 
@@ -12,6 +13,9 @@ from domain.bi.pipeline import BIPipeline, _PROMPT
 from domain.router.router import QueryRouter
 from core.config.settings import settings
 from services.career.career_service import CareerService
+from services.auth.auth_service import AuthError, auth_service
+from services.chat.conversation_service import conversations
+from services.memory.memory_service import memory
 
 
 class UploadValidationTests(unittest.TestCase):
@@ -123,6 +127,59 @@ class ModelRoutingTests(unittest.TestCase):
             settings.TASK_MODELS.update(original)
 
 
+class AuthFlowTests(unittest.TestCase):
+    def test_email_verification_is_required_before_login(self):
+        email = f"auth-{uuid.uuid4().hex}@example.com"
+        password = "good-password-123"
+
+        created = auth_service.create_user(email, password)
+        self.assertEqual(created["user"]["email"], email)
+        self.assertFalse(created["user"]["email_verified"])
+        self.assertIn("verification_token", created)
+
+        with self.assertRaisesRegex(AuthError, "verify your email"):
+            auth_service.login(email, password)
+
+        verified = auth_service.verify_email(created["verification_token"])
+        self.assertTrue(verified["user"]["email_verified"])
+
+        session = auth_service.login(email, password)
+        self.assertEqual(session["user"]["email"], email)
+        self.assertTrue(session["token"])
+        self.assertEqual(auth_service.authenticate_token(session["token"])["email"], email)
+
+        auth_service.logout(session["token"])
+        self.assertIsNone(auth_service.authenticate_token(session["token"]))
+
+
+class UserIsolationTests(unittest.TestCase):
+    def test_chat_and_memory_are_scoped_by_user(self):
+        user_a = f"user-a-{uuid.uuid4().hex}"
+        user_b = f"user-b-{uuid.uuid4().hex}"
+        conversation_id = f"conv-{uuid.uuid4().hex}"
+        session_id = f"session-{uuid.uuid4().hex}"
+
+        conversations.create("Private A", conversation_id=conversation_id, user_id=user_a)
+        conversations.save_messages(
+            conversation_id,
+            "Private A",
+            [{"role": "user", "content": "secret from A"}],
+            user_id=user_a,
+        )
+        memory.add(session_id, "user", "remember A", user_id=user_a)
+        fact = memory.add_fact("A likes Qwen", user_id=user_a)
+
+        self.assertIsNotNone(conversations.get(conversation_id, user_id=user_a))
+        self.assertIsNone(conversations.get(conversation_id, user_id=user_b))
+        self.assertEqual(len(memory.get(session_id, user_id=user_a)), 1)
+        self.assertEqual(memory.get(session_id, user_id=user_b), [])
+        self.assertEqual(len(memory.facts(user_id=user_a)), 1)
+        self.assertEqual(memory.facts(user_id=user_b), [])
+
+        memory.delete_fact(fact["id"], user_id=user_b)
+        self.assertEqual(len(memory.facts(user_id=user_a)), 1)
+
+
 class ApiRoutingBoundaryTests(unittest.TestCase):
     root = Path(__file__).parents[1]
 
@@ -136,13 +193,14 @@ class ApiRoutingBoundaryTests(unittest.TestCase):
     def test_dedicated_rag_endpoint_does_not_use_global_router_model(self):
         source = (self.root / "apps/api/routes/rag.py").read_text(encoding="utf-8")
         self.assertNotIn("router.route", source)
-        self.assertIn("rag_agent.ask(question, session_id=session_id)", source)
+        self.assertIn("rag_agent.ask(question, session_id=session_id, model=model_settings.model_for", source)
         self.assertIn('response.headers["X-Route"] = TASK_RAG', source)
 
     def test_dedicated_bi_endpoint_does_not_use_global_router_model(self):
         source = (self.root / "apps/api/routes/bi.py").read_text(encoding="utf-8")
         self.assertNotIn("router.route", source)
-        self.assertIn("bi_agent.ask(question, session_id=session_id, dataset_name=dataset)", source)
+        self.assertIn("model=model_settings.model_for", source)
+        self.assertIn("user_id=user_id", source)
         self.assertIn('result["route"] = TASK_BI', source)
 
 

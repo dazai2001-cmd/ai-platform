@@ -26,18 +26,18 @@ class RAGAgent:
         self.pipeline = QAPipeline(self.retriever)
         self.ingestion = IngestionService(self.embedder, self.store)
 
-    def ask(self, question: str, session_id: str = None, model: str = None) -> dict:
+    def ask(self, question: str, session_id: str = None, model: str = None, user_id: str = "local") -> dict:
         session_id = session_id or str(uuid.uuid4())
-        history = memory.to_llm_format(session_id)
+        history = memory.to_llm_format(session_id, user_id=user_id)
         t0 = time.monotonic()
         model = model or settings.TASK_MODELS["rag"]
 
         try:
-            result = self.pipeline.ask(question, history=history, model=model)
+            result = self.pipeline.ask(question, history=history, model=model, user_id=user_id)
             result["session_id"] = session_id
 
-            memory.add(session_id, "user", question)
-            memory.add(session_id, "assistant", result["answer"])
+            memory.add(session_id, "user", question, user_id=user_id)
+            memory.add(session_id, "assistant", result["answer"], user_id=user_id)
 
             analytics.record(QueryEvent(
                 session_id=session_id,
@@ -60,19 +60,19 @@ class RAGAgent:
             ))
             raise
 
-    def stream_ask(self, question: str, session_id: str = None, model: str = None):
+    def stream_ask(self, question: str, session_id: str = None, model: str = None, user_id: str = "local"):
         session_id = session_id or str(uuid.uuid4())
         model = model or settings.TASK_MODELS["rag"]
-        return self.pipeline.stream_ask(question, model=model), session_id, model
+        return self.pipeline.stream_ask(question, model=model, user_id=user_id), session_id, model
 
-    def ingest_pdf(self, path: str, filename: str) -> int:
-        return self.ingestion.ingest_pdf(path, source=filename)
+    def ingest_pdf(self, path: str, filename: str, user_id: str = "local") -> int:
+        return self.ingestion.ingest_pdf(path, source=filename, extra={"user_id": user_id})
 
-    def ingest_url(self, url: str) -> int:
-        return self.ingestion.ingest_url(url)
+    def ingest_url(self, url: str, user_id: str = "local") -> int:
+        return self.ingestion.ingest_url(url, extra={"user_id": user_id})
 
-    def ingest_text(self, text: str, source: str = "note") -> int:
-        return self.ingestion.ingest_text(text, source=source)
+    def ingest_text(self, text: str, source: str = "note", user_id: str = "local") -> int:
+        return self.ingestion.ingest_text(text, source=source, extra={"user_id": user_id})
 
     def stats(self) -> dict:
         return {
@@ -80,11 +80,12 @@ class RAGAgent:
             "model": settings.TASK_MODELS["rag"]
         }
 
-    def documents(self) -> list[dict]:
-        counts = Counter(meta.get("source", "unknown") for meta in self.store.metadata)
+    def documents(self, user_id: str = "local") -> list[dict]:
+        owned = [meta for meta in self.store.metadata if meta.get("user_id", "local") == user_id]
+        counts = Counter(meta.get("source", "unknown") for meta in owned)
         documents = []
         for source, count in counts.items():
-            matching = [m for m in self.store.metadata if m.get("source", "unknown") == source]
+            matching = [m for m in owned if m.get("source", "unknown") == source]
             first = matching[0] if matching else {}
             preview = first.get("text", "")[:280]
             documents.append({
@@ -96,11 +97,11 @@ class RAGAgent:
             })
         return sorted(documents, key=lambda d: d["title"].lower())
 
-    def document_preview(self, source: str, limit: int = 8) -> dict:
+    def document_preview(self, source: str, limit: int = 8, user_id: str = "local") -> dict:
         chunks = [
             meta.get("text", "")
             for meta in self.store.metadata
-            if meta.get("source", "unknown") == source
+            if meta.get("source", "unknown") == source and meta.get("user_id", "local") == user_id
         ][:limit]
         return {
             "source": source,
@@ -109,8 +110,8 @@ class RAGAgent:
             "text": "\n\n".join(chunks),
         }
 
-    def delete_document(self, source: str) -> int:
-        return self.store.delete_by_source(source)
+    def delete_document(self, source: str, user_id: str = "local") -> int:
+        return self.store.delete_by_source(source, user_id=user_id)
 
     @staticmethod
     def _title_for_source(source: str) -> str:

@@ -17,6 +17,10 @@ class Settings:
         if origin.strip()
     ]
     API_AUTH_TOKEN = os.getenv("API_AUTH_TOKEN", "").strip()
+    AUTH_REQUIRED = os.getenv("AUTH_REQUIRED", "false").lower() == "true"
+    AUTH_SESSION_DAYS = int(os.getenv("AUTH_SESSION_DAYS", "14"))
+    AUTH_VERIFICATION_HOURS = int(os.getenv("AUTH_VERIFICATION_HOURS", "24"))
+    APP_PUBLIC_URL = os.getenv("APP_PUBLIC_URL", "http://127.0.0.1:3000").rstrip("/")
 
     # Ollama
     OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://host.docker.internal:11434")

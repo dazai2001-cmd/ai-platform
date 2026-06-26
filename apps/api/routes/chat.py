@@ -8,6 +8,8 @@ from agents.general_agent import general_agent
 from core.config.constants import TASK_BI, TASK_RAG
 from apps.api.errors import error_response
 from services.chat.conversation_service import conversations
+from apps.api.auth_context import current_user_id
+from services.settings.model_settings_service import model_settings
 
 chat_bp = Blueprint("chat", __name__, url_prefix="/api/chat")
 router = QueryRouter()
@@ -15,18 +17,18 @@ router = QueryRouter()
 
 @chat_bp.get("/conversations")
 def list_conversations():
-    return jsonify(conversations.list())
+    return jsonify(conversations.list(user_id=current_user_id()))
 
 
 @chat_bp.post("/conversations")
 def create_conversation():
     data = request.json or {}
-    return jsonify(conversations.create(title=data.get("title") or "New chat", conversation_id=data.get("id")))
+    return jsonify(conversations.create(title=data.get("title") or "New chat", conversation_id=data.get("id"), user_id=current_user_id()))
 
 
 @chat_bp.get("/conversations/<conversation_id>")
 def get_conversation(conversation_id: str):
-    conversation = conversations.get(conversation_id)
+    conversation = conversations.get(conversation_id, user_id=current_user_id())
     if not conversation:
         return jsonify({"error": "conversation not found"}), 404
     return jsonify(conversation)
@@ -39,12 +41,13 @@ def save_conversation(conversation_id: str):
         conversation_id=conversation_id,
         title=data.get("title") or "New chat",
         messages=data.get("messages") or [],
+        user_id=current_user_id(),
     ))
 
 
 @chat_bp.delete("/conversations/<conversation_id>")
 def delete_conversation(conversation_id: str):
-    conversations.delete(conversation_id)
+    conversations.delete(conversation_id, user_id=current_user_id())
     return jsonify({"deleted": True})
 
 
@@ -61,15 +64,16 @@ def chat():
     # Route
     route = router.route(query)
     task_type = route.get("type", "rag")
-    model = route.get("model")
+    user_id = current_user_id()
+    model = model_settings.model_for(task_type, user_id=user_id)
 
     try:
         if task_type == TASK_BI:
-            result = bi_agent.ask(query, session_id=session_id, dataset_name=data.get("dataset"), model=model)
+            result = bi_agent.ask(query, session_id=session_id, dataset_name=data.get("dataset"), model=model, user_id=user_id)
         elif task_type == TASK_RAG:
-            result = rag_agent.ask(query, session_id=session_id, model=model)
+            result = rag_agent.ask(query, session_id=session_id, model=model, user_id=user_id)
         else:
-            result = general_agent.ask(query, session_id=session_id, model=model)
+            result = general_agent.ask(query, session_id=session_id, model=model, user_id=user_id)
 
         # Optionally run critic
         if use_critic and task_type == TASK_RAG:
@@ -91,13 +95,13 @@ def general_chat():
     data = request.json or {}
     query = data.get("query", "").strip()
     session_id = data.get("session_id") or str(uuid.uuid4())
-    model = data.get("model")
+    model = data.get("model") or model_settings.model_for("general", user_id=current_user_id())
 
     if not query:
         return jsonify({"error": "query is required"}), 400
 
     try:
-        result = general_agent.ask(query, session_id=session_id, model=model)
+        result = general_agent.ask(query, session_id=session_id, model=model, user_id=current_user_id())
         result["route"] = "general"
         result["session_id"] = session_id
         return jsonify(result)
@@ -110,12 +114,12 @@ def general_chat_stream():
     data = request.json or {}
     query = data.get("query", "").strip()
     session_id = data.get("session_id") or str(uuid.uuid4())
-    model = data.get("model")
+    model = data.get("model") or model_settings.model_for("general", user_id=current_user_id())
 
     if not query:
         return jsonify({"error": "query is required"}), 400
 
-    generator, _, selected_model = general_agent.stream_ask(query, session_id=session_id, model=model)
+    generator, _, selected_model = general_agent.stream_ask(query, session_id=session_id, model=model, user_id=current_user_id())
 
     def stream():
         for token in generator:
@@ -139,16 +143,17 @@ def chat_stream():
 
     route = router.route(query)
     task_type = route.get("type", "general")
-    model = route.get("model")
+    user_id = current_user_id()
+    model = model_settings.model_for(task_type, user_id=user_id)
 
     if task_type == TASK_RAG:
-        generator, session_id, selected_model = rag_agent.stream_ask(query, session_id=session_id, model=model)
+        generator, session_id, selected_model = rag_agent.stream_ask(query, session_id=session_id, model=model, user_id=user_id)
     elif task_type == TASK_BI:
-        result = bi_agent.ask(query, session_id=session_id, dataset_name=data.get("dataset"), model=model)
+        result = bi_agent.ask(query, session_id=session_id, dataset_name=data.get("dataset"), model=model, user_id=user_id)
         selected_model = result.get("model") or model or ""
         generator = iter([result.get("answer", "")])
     else:
-        generator, session_id, selected_model = general_agent.stream_ask(query, session_id=session_id, model=model)
+        generator, session_id, selected_model = general_agent.stream_ask(query, session_id=session_id, model=model, user_id=user_id)
 
     def stream():
         for token in generator:

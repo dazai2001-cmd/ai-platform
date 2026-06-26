@@ -7,17 +7,17 @@ from services.storage.sqlite_service import db
 
 
 class ConversationService:
-    def create(self, title: str = "New chat", conversation_id: str = None) -> dict:
+    def create(self, title: str = "New chat", conversation_id: str = None, user_id: str = "local") -> dict:
         now = time.time()
         conversation_id = conversation_id or uuid.uuid4().hex
         db.execute(
             """
-            INSERT OR IGNORE INTO chat_conversations (id, title, created_at, updated_at)
-            VALUES (?, ?, ?, ?)
+            INSERT OR IGNORE INTO chat_conversations (id, user_id, title, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?)
             """,
-            (conversation_id, title, now, now),
+            (conversation_id, user_id, title, now, now),
         )
-        return self.get(conversation_id) or {
+        return self.get(conversation_id, user_id=user_id) or {
             "id": conversation_id,
             "title": title,
             "messages": [],
@@ -25,15 +25,17 @@ class ConversationService:
             "updatedAt": now,
         }
 
-    def list(self) -> list[dict]:
+    def list(self, user_id: str = "local") -> list[dict]:
         rows = db.query(
             """
             SELECT c.id, c.title, c.created_at, c.updated_at, COUNT(m.id) AS message_count
             FROM chat_conversations c
             LEFT JOIN chat_messages m ON m.conversation_id = c.id
+            WHERE c.user_id = ?
             GROUP BY c.id
             ORDER BY c.updated_at DESC
-            """
+            """,
+            (user_id,),
         )
         return [
             {
@@ -46,25 +48,25 @@ class ConversationService:
             for row in rows
         ]
 
-    def get(self, conversation_id: str) -> dict | None:
+    def get(self, conversation_id: str, user_id: str = "local") -> dict | None:
         conversation = db.query_one(
-            "SELECT id, title, created_at, updated_at FROM chat_conversations WHERE id = ?",
-            (conversation_id,),
+            "SELECT id, title, created_at, updated_at FROM chat_conversations WHERE id = ? AND user_id = ?",
+            (conversation_id, user_id),
         )
         if not conversation:
             return None
         return {
             "id": conversation["id"],
             "title": conversation["title"],
-            "messages": self.messages(conversation_id),
+            "messages": self.messages(conversation_id, user_id=user_id),
             "createdAt": conversation["created_at"],
             "updatedAt": conversation["updated_at"],
         }
 
-    def save_messages(self, conversation_id: str, title: str, messages: list[dict]) -> dict:
-        existing = self.get(conversation_id)
+    def save_messages(self, conversation_id: str, title: str, messages: list[dict], user_id: str = "local") -> dict:
+        existing = self.get(conversation_id, user_id=user_id)
         if not existing:
-            self.create(title=title, conversation_id=conversation_id)
+            self.create(title=title, conversation_id=conversation_id, user_id=user_id)
 
         now = time.time()
         statements = [
@@ -95,17 +97,18 @@ class ConversationService:
                 ),
             ))
         db.execute_many(statements)
-        return self.get(conversation_id)
+        return self.get(conversation_id, user_id=user_id)
 
-    def messages(self, conversation_id: str) -> list[dict]:
+    def messages(self, conversation_id: str, user_id: str = "local") -> list[dict]:
         rows = db.query(
             """
-            SELECT role, content, route, model, sources_json, chart_json, sql_text, rows_json
-            FROM chat_messages
-            WHERE conversation_id = ?
-            ORDER BY id ASC
+            SELECT m.role, m.content, m.route, m.model, m.sources_json, m.chart_json, m.sql_text, m.rows_json
+            FROM chat_messages m
+            JOIN chat_conversations c ON c.id = m.conversation_id
+            WHERE m.conversation_id = ? AND c.user_id = ?
+            ORDER BY m.id ASC
             """,
-            (conversation_id,),
+            (conversation_id, user_id),
         )
         return [
             {
@@ -121,10 +124,13 @@ class ConversationService:
             for row in rows
         ]
 
-    def delete(self, conversation_id: str):
+    def delete(self, conversation_id: str, user_id: str = "local"):
+        existing = self.get(conversation_id, user_id=user_id)
+        if not existing:
+            return
         db.execute_many([
             ("DELETE FROM chat_messages WHERE conversation_id = ?", (conversation_id,)),
-            ("DELETE FROM chat_conversations WHERE id = ?", (conversation_id,)),
+            ("DELETE FROM chat_conversations WHERE id = ? AND user_id = ?", (conversation_id, user_id)),
         ])
 
 

@@ -6,6 +6,7 @@ from services.analytics.analytics_service import analytics
 from core.config.settings import settings
 from apps.api.errors import error_response
 from services.settings.model_settings_service import model_settings
+from apps.api.auth_context import current_user_id
 
 health_bp = Blueprint("health", __name__, url_prefix="/api")
 
@@ -18,7 +19,7 @@ def health():
         "status": "ok" if ollama_ok else "degraded",
         "ollama": ollama_ok,
         "models": models,
-        "task_models": settings.TASK_MODELS,
+        "task_models": model_settings.get(user_id=current_user_id()),
         "router_model": settings.ROUTER_MODEL,
     })
 
@@ -26,7 +27,7 @@ def health():
 @health_bp.post("/health/warmup")
 def warmup():
     data = request.json or {}
-    model = (data.get("model") or "").strip() or settings.TASK_MODELS["general"]
+    model = (data.get("model") or "").strip() or model_settings.model_for("general", user_id=current_user_id())
     t0 = time.monotonic()
     try:
         response = ollama.generate(model, "/no_think\nReply with ok.", temperature=0, max_tokens=4)
@@ -43,7 +44,7 @@ def warmup():
 @health_bp.get("/settings/models")
 def get_model_settings():
     return jsonify({
-        "task_models": model_settings.get(),
+        "task_models": model_settings.get(user_id=current_user_id()),
         "available_models": ollama.list_models() if ollama.health() else [],
     })
 
@@ -52,7 +53,7 @@ def get_model_settings():
 def update_model_settings():
     data = request.json or {}
     return jsonify({
-        "task_models": model_settings.update(data.get("task_models", {})),
+        "task_models": model_settings.update(data.get("task_models", {}), user_id=current_user_id()),
         "available_models": ollama.list_models() if ollama.health() else [],
     })
 
@@ -60,7 +61,7 @@ def update_model_settings():
 @health_bp.delete("/settings/models")
 def reset_model_settings():
     return jsonify({
-        "task_models": model_settings.reset(),
+        "task_models": model_settings.reset(user_id=current_user_id()),
         "available_models": ollama.list_models() if ollama.health() else [],
     })
 

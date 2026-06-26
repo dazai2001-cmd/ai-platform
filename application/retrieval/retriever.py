@@ -6,10 +6,10 @@ class Retriever:
         self.embedder = embedder
         self.store = store
 
-    def search(self, query: str, k: int = None) -> list[dict]:
+    def search(self, query: str, k: int = None, user_id: str = None) -> list[dict]:
         k = k or settings.TOP_K
         vec = self.embedder.embed(query)
-        return self.store.search(vec, k)
+        return self.store.search(vec, k, user_id=user_id)
 
     def format_context(self, results: list[dict], max_chars: int = 4000) -> str:
         parts = []

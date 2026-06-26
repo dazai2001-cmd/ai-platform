@@ -4,7 +4,9 @@ from flask import Blueprint, request, jsonify
 from agents.bi_agent import bi_agent
 from apps.api.deps import save_upload, ALLOWED_DATA
 from apps.api.errors import error_response
+from apps.api.auth_context import current_user_id
 from core.config.constants import TASK_BI
+from services.settings.model_settings_service import model_settings
 
 bi_bp = Blueprint("bi", __name__, url_prefix="/api/bi")
 
@@ -17,10 +19,11 @@ def upload():
             raise ValueError("No file provided")
         name = request.form.get("name") or Path(f.filename).stem
         path = save_upload(f, ALLOWED_DATA)
+        user_id = current_user_id()
         if f.filename.lower().endswith(".csv"):
-            info = bi_agent.load_csv(path, name)
+            info = bi_agent.load_csv(path, name, user_id=user_id)
         else:
-            info = bi_agent.load_excel(path, name)
+            info = bi_agent.load_excel(path, name, user_id=user_id)
         return jsonify(info)
     except ValueError as e:
         return error_response(e, 400)
@@ -30,12 +33,12 @@ def upload():
 
 @bi_bp.get("/datasets")
 def datasets():
-    return jsonify(bi_agent.list_datasets())
+    return jsonify(bi_agent.list_datasets(user_id=current_user_id()))
 
 
 @bi_bp.get("/datasets/<name>/sample")
 def sample(name: str):
-    result = bi_agent.get_sample(name)
+    result = bi_agent.get_sample(name, user_id=current_user_id())
     if result is None:
         return jsonify({"error": "Dataset not found"}), 404
     return jsonify(result)
@@ -52,7 +55,14 @@ def ask():
         return jsonify({"error": "question is required"}), 400
 
     try:
-        result = bi_agent.ask(question, session_id=session_id, dataset_name=dataset)
+        user_id = current_user_id()
+        result = bi_agent.ask(
+            question,
+            session_id=session_id,
+            dataset_name=dataset,
+            model=model_settings.model_for("bi", user_id=user_id),
+            user_id=user_id,
+        )
         result["route"] = TASK_BI
         return jsonify(result)
     except Exception as e:
