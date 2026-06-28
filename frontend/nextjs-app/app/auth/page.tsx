@@ -14,6 +14,8 @@ function AuthPageContent() {
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
   const [verificationUrl, setVerificationUrl] = useState("");
+  const [verificationSent, setVerificationSent] = useState(false);
+  const [verificationMessage, setVerificationMessage] = useState("");
   const { login, signup } = useAuth();
   const router = useRouter();
   const search = useSearchParams();
@@ -23,11 +25,15 @@ function AuthPageContent() {
     event.preventDefault();
     setError("");
     setVerificationUrl("");
+    setVerificationSent(false);
+    setVerificationMessage("");
     setLoading(true);
     try {
       if (mode === "signup") {
         const result = await signup(email, password);
         setVerificationUrl(result.verification_url || "");
+        setVerificationSent(Boolean(result.verification_sent));
+        setVerificationMessage(result.message || "");
       } else {
         await login(email, password);
         router.replace(next);
@@ -61,6 +67,8 @@ function AuthPageContent() {
                 setMode(item);
                 setError("");
                 setVerificationUrl("");
+                setVerificationSent(false);
+                setVerificationMessage("");
               }}
               className={`rounded px-3 py-2 text-sm transition ${
                 mode === item ? "bg-cyan-400/15 text-cyan-100" : "text-slate-400 hover:text-white"
@@ -103,15 +111,20 @@ function AuthPageContent() {
             </div>
           )}
 
-          {verificationUrl && (
+          {(verificationSent || verificationUrl) && (
             <div className="rounded-md border border-emerald-400/25 bg-emerald-400/10 px-3 py-3 text-sm text-emerald-100">
               <div className="mb-2 flex items-center gap-2 font-medium">
                 <MailCheck size={16} />
-                Verification link created
+                {verificationSent ? "Verification email sent" : "Verification link created"}
               </div>
-              <Link href={verificationUrl} className="break-all text-cyan-100 underline underline-offset-4">
-                {verificationUrl}
-              </Link>
+              <p className="text-emerald-50/90">
+                {verificationMessage || (verificationSent ? "Check your inbox before signing in." : "Open this link to verify your email.")}
+              </p>
+              {verificationUrl && (
+                <Link href={verificationUrl} className="mt-2 block break-all text-cyan-100 underline underline-offset-4">
+                  {verificationUrl}
+                </Link>
+              )}
             </div>
           )}
 

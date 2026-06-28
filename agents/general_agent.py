@@ -113,7 +113,7 @@ class GeneralAgent:
                 yield token
 
             answer = "".join(parts).strip()
-            if answer:
+            if answer and success:
                 memory.add(session_id, "user", query, user_id=user_id)
                 memory.add(session_id, "assistant", answer, user_id=user_id)
 

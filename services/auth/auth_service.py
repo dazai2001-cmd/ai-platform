@@ -6,6 +6,7 @@ import uuid
 from werkzeug.security import check_password_hash, generate_password_hash
 
 from core.config.settings import settings
+from services.auth.email_service import EmailDeliveryError, email_service
 from services.storage.sqlite_service import db
 
 
@@ -49,7 +50,7 @@ class AuthService:
         )
         user = db.query_one("SELECT * FROM auth_users WHERE id = ?", (user_id,))
         verification = self.create_verification_token(user_id)
-        return {"user": self._public_user(user), **verification}
+        return {"user": self._public_user(user), **self._deliver_verification(normalized, verification)}
 
     def create_verification_token(self, user_id: str) -> dict:
         token = secrets.token_urlsafe(32)
@@ -92,7 +93,42 @@ class AuthService:
             raise AuthError("No account found for this email")
         if user["email_verified"]:
             return {"already_verified": True, "user": self._public_user(user)}
-        return {"already_verified": False, "user": self._public_user(user), **self.create_verification_token(user["id"])}
+        verification = self.create_verification_token(user["id"])
+        return {
+            "already_verified": False,
+            "user": self._public_user(user),
+            **self._deliver_verification(normalized, verification),
+        }
+
+    def _deliver_verification(self, email: str, verification: dict) -> dict:
+        response = {
+            "verification_sent": False,
+            "verification_delivery": "link",
+            "verification_expires_at": verification["verification_expires_at"],
+            "message": "Verification link created.",
+        }
+
+        if email_service.enabled():
+            try:
+                delivery = email_service.send_verification_email(email, verification["verification_url"])
+                response.update({
+                    "verification_sent": True,
+                    "verification_delivery": "email",
+                    "email_id": delivery.get("id"),
+                    "message": "Verification email sent. Check your inbox.",
+                })
+            except EmailDeliveryError as exc:
+                response.update({
+                    "verification_error": str(exc),
+                    "message": "Could not send email, so a verification link was created instead.",
+                })
+
+        if not (settings.IS_CLOUD_RUNTIME and response["verification_sent"]):
+            response.update({
+                "verification_token": verification["verification_token"],
+                "verification_url": verification["verification_url"],
+            })
+        return response
 
     def login(self, email: str, password: str) -> dict:
         normalized = (email or "").strip().lower()

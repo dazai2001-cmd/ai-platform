@@ -427,6 +427,10 @@ GEMINI_MODELS=gemini-2.0-flash
 
 OPENROUTER_API_KEY=...
 OPENROUTER_MODELS=google/gemini-2.0-flash-exp:free
+
+RESEND_API_KEY=...
+EMAIL_FROM=AI Platform <verify@your-domain.com>
+SEND_VERIFICATION_EMAILS=true
 ```
 
 Model IDs shown to the app are provider-prefixed:
@@ -442,3 +446,8 @@ Frontend-only variables belong in Netlify:
 NEXT_PUBLIC_API_URL=https://your-render-service.onrender.com
 NEXT_PUBLIC_AUTH_REQUIRED=true
 ```
+
+If `SEND_VERIFICATION_EMAILS=true` and `RESEND_API_KEY` is configured, signup
+and resend-verification requests send real email links through Resend. Local
+development defaults to showing the verification link on the auth page so the
+flow can be tested without an email provider.

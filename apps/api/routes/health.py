@@ -20,6 +20,16 @@ def health():
         "runtime": settings.AI_RUNTIME,
         "ollama": ollama_ok if not settings.IS_CLOUD_RUNTIME else False,
         "cloud_models": settings.IS_CLOUD_RUNTIME,
+        "provider_status": {
+            "gemini": {
+                "api_key": bool(settings.GEMINI_API_KEY),
+                "models": len(settings.GEMINI_MODELS),
+            },
+            "openrouter": {
+                "api_key": bool(settings.OPENROUTER_API_KEY),
+                "models": len(settings.OPENROUTER_MODELS),
+            },
+        },
         "models": models,
         "task_models": model_settings.get(user_id=current_user_id()),
         "router_model": settings.ROUTER_MODEL,

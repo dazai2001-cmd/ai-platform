@@ -44,6 +44,7 @@ export default function SettingsPage() {
   const availableModels = modelSettings?.available_models || health?.models || [];
   const runtime = health?.runtime || (health?.cloud_models ? "cloud" : "local");
   const isCloud = runtime === "cloud";
+  const providerStatus = health?.provider_status || {};
 
   const persistTaskModels = async (nextTaskModels: Record<string, string>) => {
     const requestId = saveRequestRef.current + 1;
@@ -133,6 +134,18 @@ export default function SettingsPage() {
               <span className="text-sm text-slate-500">No model list available.</span>
             )}
           </div>
+          {isCloud && (
+            <div className="mt-4 space-y-2 border-t border-slate-800 pt-4">
+              {Object.entries(providerStatus).map(([provider, status]: [string, any]) => (
+                <div key={provider} className="flex items-center justify-between gap-3 text-xs">
+                  <span className="capitalize text-slate-400">{provider}</span>
+                  <span className={status?.api_key && status?.models ? "text-emerald-300" : "text-amber-300"}>
+                    {status?.api_key ? `${status?.models || 0} models configured` : "API key missing"}
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
         </section>
 
         <section className="rounded-md border border-slate-800 bg-slate-900/70 p-5">

@@ -56,6 +56,32 @@ class CareerService:
         )
         return pack
 
+    def application_pack_for_match(
+        self,
+        cv_text: str,
+        job_description: str,
+        analysis: dict[str, Any],
+        model: str | None = None,
+    ) -> dict[str, Any]:
+        selected_model = self._select_model(model)
+        raw = ollama.generate(
+            selected_model,
+            self._match_pack_prompt(cv_text, job_description, analysis),
+            temperature=0.2,
+            max_tokens=750,
+            json_format=True,
+        )
+        generated = self._json_or_fallback(raw, "application_pack")
+        pack = {
+            "analysis": analysis,
+            "tailored_cv": generated.get("tailored_cv"),
+            "cover_letter": generated.get("cover_letter"),
+            "model": selected_model,
+        }
+        if generated.get("warning"):
+            pack["warning"] = generated["warning"]
+        return pack
+
     def _select_model(self, override: str | None = None) -> str:
         return override or settings.TASK_MODELS.get(TASK_CAREER, settings.ROUTER_MODEL)
 
@@ -157,6 +183,44 @@ CV/profile:
 
 Job description:
 \"\"\"{job_description}\"\"\"
+""".strip()
+
+    def _match_pack_prompt(
+        self,
+        cv_text: str,
+        job_description: str,
+        analysis: dict[str, Any],
+    ) -> str:
+        return f"""
+/no_think
+Create a concise application pack using only facts in the CV/profile. The job
+has already been scored, so do not repeat the fit analysis. Do not invent
+experience, metrics, employers, education, tools, or authorization status.
+
+Return strict JSON with exactly these top-level keys:
+{{
+  "tailored_cv": {{
+    "headline": "maximum 12 words",
+    "professional_summary": "2 concise sentences",
+    "priority_keywords": ["maximum 6 items"],
+    "tailored_bullets": ["maximum 4 concise bullets"],
+    "do_not_claim": ["maximum 3 items"]
+  }},
+  "cover_letter": {{
+    "cover_letter": "90-120 words",
+    "customization_notes": ["maximum 2 items"],
+    "questions_for_user": ["maximum 2 items"]
+  }}
+}}
+
+Existing fit analysis for context:
+{json.dumps(analysis, ensure_ascii=True)}
+
+CV/profile:
+<cv>{cv_text}</cv>
+
+Job description:
+<job>{job_description}</job>
 """.strip()
 
     def _json_or_fallback(self, raw: str, key: str) -> dict[str, Any]:

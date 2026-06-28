@@ -250,7 +250,8 @@ class AuthFlowTests(unittest.TestCase):
         email = f"auth-{uuid.uuid4().hex}@example.com"
         password = "good-password-123"
 
-        created = auth_service.create_user(email, password)
+        with patch.object(settings, "SEND_VERIFICATION_EMAILS", False):
+            created = auth_service.create_user(email, password)
         self.assertEqual(created["user"]["email"], email)
         self.assertFalse(created["user"]["email_verified"])
         self.assertIn("verification_token", created)
@@ -268,6 +269,37 @@ class AuthFlowTests(unittest.TestCase):
 
         auth_service.logout(session["token"])
         self.assertIsNone(auth_service.authenticate_token(session["token"]))
+
+    def test_cloud_signup_sends_verification_email_without_exposing_token(self):
+        class Response:
+            content = b'{"id":"email-test-id"}'
+
+            def raise_for_status(self):
+                return None
+
+            def json(self):
+                return {"id": "email-test-id"}
+
+        email = f"cloud-auth-{uuid.uuid4().hex}@example.com"
+        password = "good-password-123"
+
+        with (
+            patch.object(settings, "IS_CLOUD_RUNTIME", True),
+            patch.object(settings, "SEND_VERIFICATION_EMAILS", True),
+            patch.object(settings, "RESEND_API_KEY", "resend-test-key"),
+            patch.object(settings, "EMAIL_FROM", "AI Platform <verify@example.com>"),
+            patch("services.auth.email_service.requests.post", return_value=Response()) as post,
+        ):
+            created = auth_service.create_user(email, password)
+
+        self.assertTrue(created["verification_sent"])
+        self.assertEqual(created["verification_delivery"], "email")
+        self.assertEqual(created["email_id"], "email-test-id")
+        self.assertNotIn("verification_token", created)
+        self.assertNotIn("verification_url", created)
+        self.assertEqual(post.call_args.args[0], "https://api.resend.com/emails")
+        self.assertEqual(post.call_args.kwargs["headers"]["Authorization"], "Bearer resend-test-key")
+        self.assertEqual(post.call_args.kwargs["json"]["to"], [email])
 
 
 class UserIsolationTests(unittest.TestCase):

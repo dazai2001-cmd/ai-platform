@@ -21,6 +21,12 @@ class Settings:
     AUTH_SESSION_DAYS = int(os.getenv("AUTH_SESSION_DAYS", "14"))
     AUTH_VERIFICATION_HOURS = int(os.getenv("AUTH_VERIFICATION_HOURS", "24"))
     APP_PUBLIC_URL = os.getenv("APP_PUBLIC_URL", "http://127.0.0.1:3000").rstrip("/")
+    RESEND_API_KEY = os.getenv("RESEND_API_KEY", "").strip()
+    EMAIL_FROM = os.getenv("EMAIL_FROM", "AI Platform <onboarding@resend.dev>").strip()
+    SEND_VERIFICATION_EMAILS = os.getenv(
+        "SEND_VERIFICATION_EMAILS",
+        "true" if os.getenv("AI_RUNTIME", "local").strip().lower() == "cloud" else "false",
+    ).lower() == "true"
     AI_RUNTIME = os.getenv("AI_RUNTIME", "local").strip().lower()
     IS_CLOUD_RUNTIME = AI_RUNTIME == "cloud"
 
@@ -68,6 +74,14 @@ class Settings:
     TOP_K = int(os.getenv("TOP_K", DEFAULT_TOP_K))
     INDEX_PATH = os.getenv("INDEX_PATH", INDEX_PATH)
     MAX_URL_INGEST_BYTES = int(os.getenv("MAX_URL_INGEST_BYTES", "5242880"))
+
+    # Career search providers
+    ADZUNA_APP_ID = os.getenv("ADZUNA_APP_ID", "").strip()
+    ADZUNA_APP_KEY = os.getenv("ADZUNA_APP_KEY", "").strip()
+    REED_API_KEY = os.getenv("REED_API_KEY", "").strip()
+    CAREER_CLOUD_MAX_SCORE_BATCH_JOBS = int(os.getenv("CAREER_CLOUD_MAX_SCORE_BATCH_JOBS", "10"))
+    CAREER_CLOUD_DAILY_SCORE_LIMIT = int(os.getenv("CAREER_CLOUD_DAILY_SCORE_LIMIT", "25"))
+    CAREER_CLOUD_DAILY_PACK_LIMIT = int(os.getenv("CAREER_CLOUD_DAILY_PACK_LIMIT", "5"))
 
     # Memory
     REDIS_URL = os.getenv("REDIS_URL", "redis://redis:6379")

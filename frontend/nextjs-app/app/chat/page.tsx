@@ -239,7 +239,7 @@ export default function ChatPage() {
           </div>
           <div>
             <h1 className="text-lg font-semibold text-white">General Chat</h1>
-            <p className="text-sm text-slate-500">Talk to the local assistant without document retrieval.</p>
+            <p className="text-sm text-slate-500">Talk to the selected assistant without document retrieval.</p>
           </div>
         </div>
       </header>
@@ -254,7 +254,7 @@ export default function ChatPage() {
             resetKey={activeConversation.id}
             onMessagesChange={updateActiveMessages}
             placeholder="Ask a general question..."
-            emptyTitle="Chat with your local assistant"
+            emptyTitle="Chat with your AI assistant"
           />
         )}
       </div>

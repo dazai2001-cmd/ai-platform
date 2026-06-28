@@ -121,6 +121,17 @@ export default function ChatWindow({
       });
     };
 
+    const removeStreamDraft = () => {
+      setMessages((current) => {
+        const next = [...current];
+        const last = next[next.length - 1];
+        if (last?.role === "assistant" && (!last.content.trim() || last.content.startsWith("[STREAM ERROR]:"))) {
+          next.pop();
+        }
+        return next;
+      });
+    };
+
     try {
       if (onStream) {
         const updateAssistantDraft = (nextContent: string) => {
@@ -158,10 +169,16 @@ export default function ChatWindow({
           const { done, value } = await reader.read();
           if (done) break;
           content += decoder.decode(value, { stream: true });
+          if (content.trimStart().startsWith("[STREAM ERROR]:")) {
+            throw new Error(content.replace("[STREAM ERROR]:", "").trim() || "Streaming request failed.");
+          }
           updateAssistantDraft(content);
         }
 
         content += decoder.decode();
+        if (content.trimStart().startsWith("[STREAM ERROR]:")) {
+          throw new Error(content.replace("[STREAM ERROR]:", "").trim() || "Streaming request failed.");
+        }
         if (streamFrameRef.current !== null) {
           window.cancelAnimationFrame(streamFrameRef.current);
           streamFrameRef.current = null;
@@ -187,6 +204,7 @@ export default function ChatWindow({
       appendFinalAnswer(res);
     } catch (error) {
       if (onStream) {
+        removeStreamDraft();
         try {
           const res = await onSend(text);
           appendFinalAnswer(res);

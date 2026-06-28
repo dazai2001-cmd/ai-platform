@@ -143,6 +143,75 @@ class SQLiteService:
             )
             """, ()),
             ("CREATE INDEX IF NOT EXISTS idx_auth_sessions_user ON auth_sessions(user_id)", ()),
+            ("""
+            CREATE TABLE IF NOT EXISTS career_preferences (
+              user_id TEXT PRIMARY KEY,
+              preferences_json TEXT NOT NULL,
+              updated_at REAL NOT NULL
+            )
+            """, ()),
+            ("""
+            CREATE TABLE IF NOT EXISTS career_profile (
+              user_id TEXT PRIMARY KEY,
+              cv_text TEXT NOT NULL,
+              updated_at REAL NOT NULL
+            )
+            """, ()),
+            ("""
+            CREATE TABLE IF NOT EXISTS career_jobs (
+              id TEXT PRIMARY KEY,
+              user_id TEXT NOT NULL DEFAULT 'local',
+              title TEXT NOT NULL,
+              company TEXT,
+              location TEXT,
+              url TEXT,
+              description TEXT NOT NULL,
+              source TEXT NOT NULL,
+              status TEXT NOT NULL,
+              fit_score INTEGER,
+              decision TEXT,
+              analysis_json TEXT,
+              applied_at REAL,
+              created_at REAL NOT NULL,
+              updated_at REAL NOT NULL
+            )
+            """, ()),
+            ("""
+            CREATE TABLE IF NOT EXISTS career_score_batches (
+              id TEXT PRIMARY KEY,
+              user_id TEXT NOT NULL DEFAULT 'local',
+              status TEXT NOT NULL,
+              cv_text TEXT NOT NULL,
+              total INTEGER NOT NULL DEFAULT 0,
+              completed INTEGER NOT NULL DEFAULT 0,
+              failed INTEGER NOT NULL DEFAULT 0,
+              created_at REAL NOT NULL,
+              updated_at REAL NOT NULL
+            )
+            """, ()),
+            ("""
+            CREATE TABLE IF NOT EXISTS career_score_tasks (
+              batch_id TEXT NOT NULL,
+              job_id TEXT NOT NULL,
+              status TEXT NOT NULL,
+              error TEXT,
+              created_at REAL NOT NULL,
+              updated_at REAL NOT NULL,
+              PRIMARY KEY (batch_id, job_id),
+              FOREIGN KEY(batch_id) REFERENCES career_score_batches(id) ON DELETE CASCADE,
+              FOREIGN KEY(job_id) REFERENCES career_jobs(id) ON DELETE CASCADE
+            )
+            """, ()),
+            ("CREATE INDEX IF NOT EXISTS idx_career_score_tasks_status ON career_score_tasks(status, created_at)", ()),
+            ("""
+            CREATE TABLE IF NOT EXISTS usage_events (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              user_id TEXT NOT NULL,
+              action TEXT NOT NULL,
+              created_at REAL NOT NULL
+            )
+            """, ()),
+            ("CREATE INDEX IF NOT EXISTS idx_usage_events_user_action_time ON usage_events(user_id, action, created_at)", ()),
         ])
         self._migrate_user_scopes()
 
@@ -155,12 +224,41 @@ class SQLiteService:
             self.execute(f"ALTER TABLE {table} ADD COLUMN {column} {ddl}")
 
     def _migrate_user_scopes(self):
+        self._migrate_career_singleton_table("career_preferences", "preferences_json TEXT NOT NULL", "preferences_json", "{}")
+        self._migrate_career_singleton_table("career_profile", "cv_text TEXT NOT NULL", "cv_text", "")
         self._add_column_if_missing("memory_messages", "user_id", "TEXT NOT NULL DEFAULT 'local'")
         self._add_column_if_missing("memory_facts", "user_id", "TEXT NOT NULL DEFAULT 'local'")
         self._add_column_if_missing("chat_conversations", "user_id", "TEXT NOT NULL DEFAULT 'local'")
+        self._add_column_if_missing("career_jobs", "user_id", "TEXT NOT NULL DEFAULT 'local'")
+        self._add_column_if_missing("career_jobs", "applied_at", "REAL")
+        self._add_column_if_missing("career_score_batches", "user_id", "TEXT NOT NULL DEFAULT 'local'")
         self.execute("CREATE INDEX IF NOT EXISTS idx_memory_user_session ON memory_messages(user_id, session_id, id)")
         self.execute("CREATE INDEX IF NOT EXISTS idx_memory_facts_user ON memory_facts(user_id, timestamp)")
         self.execute("CREATE INDEX IF NOT EXISTS idx_chat_conversations_user ON chat_conversations(user_id, updated_at)")
+        self.execute("CREATE INDEX IF NOT EXISTS idx_career_jobs_user_updated ON career_jobs(user_id, updated_at DESC)")
+
+    def _migrate_career_singleton_table(self, table: str, value_ddl: str, value_column: str, fallback: str):
+        columns = [row["name"] for row in self.query(f"PRAGMA table_info({table})")]
+        if not columns or "id" not in columns:
+            return
+
+        row = self.query_one(f"SELECT {value_column}, updated_at FROM {table} WHERE id = 1")
+        value = row[value_column] if row else fallback
+        updated_at = row["updated_at"] if row else 0
+        self.execute(f"DROP TABLE {table}")
+        self.execute(
+            f"""
+            CREATE TABLE {table} (
+              user_id TEXT PRIMARY KEY,
+              {value_ddl},
+              updated_at REAL NOT NULL
+            )
+            """
+        )
+        self.execute(
+            f"INSERT INTO {table} (user_id, {value_column}, updated_at) VALUES (?, ?, ?)",
+            ("local", value, updated_at),
+        )
 
 
 db = SQLiteService()
