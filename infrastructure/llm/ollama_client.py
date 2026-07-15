@@ -12,13 +12,33 @@ class OllamaClient:
     def __init__(self):
         self.base_url = settings.OLLAMA_BASE_URL.rstrip("/")
 
+    @staticmethod
+    def _configured_cloud_models() -> set[str]:
+        models: set[str] = set()
+        if settings.GEMINI_API_KEY:
+            models.update(f"gemini:{model}" for model in settings.GEMINI_MODELS)
+        if settings.OPENROUTER_API_KEY:
+            models.update(f"openrouter:{model}" for model in settings.OPENROUTER_MODELS)
+        return models
+
     def _provider_for(self, model: str) -> tuple[str, str]:
+        model = (model or "").strip()
+        if not model:
+            raise ValueError("model is required")
+
+        configured_cloud_models = self._configured_cloud_models()
         if model.startswith("gemini:"):
+            if model not in configured_cloud_models:
+                raise ValueError("model is not in the configured allow-list")
             return "gemini", model.split(":", 1)[1]
         if model.startswith("openrouter:"):
+            if model not in configured_cloud_models:
+                raise ValueError("model is not in the configured allow-list")
             return "openrouter", model.split(":", 1)[1]
         if settings.IS_CLOUD_RUNTIME:
-            return "gemini", (settings.GEMINI_MODELS[0] if settings.GEMINI_MODELS else model)
+            raise ValueError("cloud models must use a configured provider model")
+        if settings.IS_PRODUCTION and model not in set(settings.LOCAL_ALLOWED_MODELS):
+            raise ValueError("model is not in the configured allow-list")
         return "ollama", model
 
     def generate(
@@ -117,12 +137,7 @@ class OllamaClient:
 
     def list_models(self) -> list[str]:
         if settings.IS_CLOUD_RUNTIME:
-            models = []
-            if settings.GEMINI_API_KEY:
-                models.extend(f"gemini:{model}" for model in settings.GEMINI_MODELS)
-            if settings.OPENROUTER_API_KEY:
-                models.extend(f"openrouter:{model}" for model in settings.OPENROUTER_MODELS)
-            return models
+            return sorted(self._configured_cloud_models())
         try:
             r = requests.get(f"{self.base_url}/api/tags", timeout=5)
             r.raise_for_status()

@@ -99,12 +99,12 @@ export default function SettingsPage() {
     <div className="mx-auto max-w-5xl px-4 py-6 sm:px-6 lg:py-8">
       <div className="mb-6 flex items-center justify-between gap-4">
         <div>
-          <h1 className="text-xl font-semibold text-white">Status</h1>
-          <p className="text-sm text-slate-500">Runtime health and routing configuration.</p>
+          <h1 className="text-xl font-semibold text-ink">Status</h1>
+          <p className="text-sm text-muted">Runtime health and routing configuration.</p>
         </div>
         <button
           onClick={refresh}
-          className="flex items-center gap-2 rounded-md border border-slate-700 px-3 py-2 text-sm text-slate-300 transition hover:border-slate-500 hover:text-white"
+          className="flex items-center gap-2 rounded-md border border-line px-3 py-2 text-sm text-ink-subtle transition hover:border-line-strong hover:text-ink"
         >
           <RefreshCw size={15} className={loading ? "animate-spin" : ""} />
           Refresh
@@ -112,34 +112,34 @@ export default function SettingsPage() {
       </div>
 
       <div className="grid gap-4 lg:grid-cols-[1fr_1fr]">
-        <section className="rounded-md border border-slate-800 bg-slate-900/70 p-5">
-          <h2 className="mb-4 text-sm font-semibold text-slate-200">{isCloud ? "Cloud Models" : "Ollama"}</h2>
+        <section className="rounded-md border border-line-soft bg-panel/70 p-5">
+          <h2 className="mb-4 text-sm font-semibold text-ink">{isCloud ? "Cloud Models" : "Ollama"}</h2>
           <div className="mb-4 flex items-center gap-2">
             {health?.status === "ok" ? (
-              <CheckCircle size={17} className="text-emerald-300" />
+              <CheckCircle size={17} className="text-success-ink" />
             ) : (
-              <XCircle size={17} className="text-rose-300" />
+              <XCircle size={17} className="text-danger-ink" />
             )}
-            <span className="text-sm text-slate-300">
+            <span className="text-sm text-ink-subtle">
               {health?.status === "ok" ? (isCloud ? "Cloud runtime ready" : "Connected") : "Not reachable"}
             </span>
           </div>
-          <p className="mb-3 text-xs uppercase tracking-wide text-slate-600">Runtime: {runtime}</p>
+          <p className="mb-3 text-xs uppercase tracking-wide text-muted-soft">Runtime: {runtime}</p>
           <div className="flex flex-wrap gap-2">
             {health?.models?.length ? (
               health.models.map((m: string) => (
-                <span key={m} className="rounded-md bg-slate-800 px-2 py-1 text-xs text-slate-300">{m}</span>
+                <span key={m} className="rounded-md bg-soft px-2 py-1 text-xs text-ink-subtle">{m}</span>
               ))
             ) : (
-              <span className="text-sm text-slate-500">No model list available.</span>
+              <span className="text-sm text-muted">No model list available.</span>
             )}
           </div>
           {isCloud && (
-            <div className="mt-4 space-y-2 border-t border-slate-800 pt-4">
+            <div className="mt-4 space-y-2 border-t border-line-soft pt-4">
               {Object.entries(providerStatus).map(([provider, status]: [string, any]) => (
                 <div key={provider} className="flex items-center justify-between gap-3 text-xs">
-                  <span className="capitalize text-slate-400">{provider}</span>
-                  <span className={status?.api_key && status?.models ? "text-emerald-300" : "text-amber-300"}>
+                  <span className="capitalize text-muted">{provider}</span>
+                  <span className={status?.api_key && status?.models ? "text-success-ink" : "text-warning-ink"}>
                     {status?.api_key ? `${status?.models || 0} models configured` : "API key missing"}
                   </span>
                 </div>
@@ -148,37 +148,37 @@ export default function SettingsPage() {
           )}
         </section>
 
-        <section className="rounded-md border border-slate-800 bg-slate-900/70 p-5">
-          <h2 className="mb-4 text-sm font-semibold text-slate-200">Analytics Snapshot</h2>
+        <section className="rounded-md border border-line-soft bg-panel/70 p-5">
+          <h2 className="mb-4 text-sm font-semibold text-ink">Analytics Snapshot</h2>
           <div className="grid grid-cols-2 gap-3">
             {cards.map(([label, value]) => (
-              <div key={label as string} className="rounded-md bg-slate-950/80 p-3">
-                <p className="text-xs text-slate-500">{label}</p>
-                <p className="mt-1 text-lg font-semibold text-white">{value}</p>
+              <div key={label as string} className="rounded-md bg-canvas/80 p-3">
+                <p className="text-xs text-muted">{label}</p>
+                <p className="mt-1 text-lg font-semibold text-ink">{value}</p>
               </div>
             ))}
           </div>
         </section>
 
-        <section className="rounded-md border border-slate-800 bg-slate-900/70 p-5 lg:col-span-2">
+        <section className="rounded-md border border-line-soft bg-panel/70 p-5 lg:col-span-2">
           <div className="mb-4 flex items-center justify-between gap-4">
             <div>
-              <h2 className="text-sm font-semibold text-slate-200">Agent Models</h2>
-              <p className="mt-1 text-sm text-slate-500">Choose the default model each agent uses. Changes save automatically.</p>
-              {saveStatus && <p className="mt-1 text-xs text-slate-500">{saveStatus}</p>}
+              <h2 className="text-sm font-semibold text-ink">Agent Models</h2>
+              <p className="mt-1 text-sm text-muted">Choose the default model each agent uses. Changes save automatically.</p>
+              {saveStatus && <p className="mt-1 text-xs text-muted">{saveStatus}</p>}
             </div>
             <div className="flex gap-2">
               <button
                 onClick={resetModels}
                 disabled={saving}
-                className="rounded-md border border-slate-700 px-3 py-2 text-sm text-slate-300 transition hover:border-slate-500 hover:text-white disabled:opacity-50"
+                className="rounded-md border border-line px-3 py-2 text-sm text-ink-subtle transition hover:border-line-strong hover:text-ink disabled:opacity-50"
               >
                 Reset
               </button>
               <button
                 onClick={saveModels}
                 disabled={saving}
-                className="flex items-center gap-2 rounded-md bg-cyan-400 px-3 py-2 text-sm font-medium text-slate-950 transition hover:bg-cyan-300 disabled:opacity-50"
+                className="flex items-center gap-2 rounded-md bg-brand px-3 py-2 text-sm font-medium text-white transition hover:bg-brand-hover disabled:opacity-50"
               >
                 <RefreshCw size={15} className={saving ? "animate-spin" : ""} />
                 Save
@@ -187,12 +187,12 @@ export default function SettingsPage() {
           </div>
           <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
             {Object.entries(taskModels).map(([task, model]) => (
-              <label key={task} className="rounded-md bg-slate-950/80 p-3">
-                <span className="mb-2 block text-xs uppercase tracking-wide text-slate-600">{task}</span>
+              <label key={task} className="rounded-md bg-canvas/80 p-3">
+                <span className="mb-2 block text-xs uppercase tracking-wide text-muted-soft">{task}</span>
                 <select
                   value={model as string}
                   onChange={(e) => setTaskModel(task, e.target.value)}
-                  className="w-full rounded-md border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-slate-100 outline-none focus:border-cyan-400"
+                  className="w-full rounded-md border border-line bg-panel px-3 py-2 text-sm text-ink outline-none focus:border-analytic"
                 >
                   {[model as string, ...availableModels.filter((m: string) => m !== model)].map((option: string) => (
                     <option key={option} value={option}>{option}</option>

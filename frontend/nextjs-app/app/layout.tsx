@@ -5,7 +5,7 @@ import { AuthProvider } from "@/lib/auth";
 
 export const metadata: Metadata = {
   title: "AI Platform",
-  description: "Your local AI workspace",
+  description: "A focused workspace for AI, knowledge, analysis, and career tools",
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
@@ -13,9 +13,9 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
     <html lang="en">
       <body>
         <AuthProvider>
-          <div className="min-h-screen text-slate-100 lg:flex">
+          <div className="min-h-screen bg-canvas text-ink lg:flex">
             <Sidebar />
-            <main className="min-h-screen flex-1 overflow-hidden bg-slate-950/55">
+            <main className="min-h-0 flex-1 overflow-hidden bg-canvas lg:min-h-dvh">
               {children}
             </main>
           </div>

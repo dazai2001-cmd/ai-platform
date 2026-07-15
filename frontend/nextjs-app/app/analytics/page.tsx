@@ -38,17 +38,17 @@ export default function AnalyticsPage() {
     <div className="mx-auto max-w-6xl px-4 py-6 sm:px-6 lg:py-8">
       <div className="mb-6 flex items-center justify-between gap-4">
         <div className="flex items-center gap-3">
-          <div className="grid h-10 w-10 place-items-center rounded-md bg-cyan-400/10 text-cyan-300">
+          <div className="grid h-10 w-10 place-items-center rounded-md bg-brand/10 text-analytic">
             <Activity size={20} />
           </div>
           <div>
-            <h1 className="text-xl font-semibold text-white">Analytics</h1>
-            <p className="text-sm text-slate-500">Recent agent usage and latency.</p>
+            <h1 className="text-xl font-semibold text-ink">Analytics</h1>
+            <p className="text-sm text-muted">Recent agent usage and latency.</p>
           </div>
         </div>
         <button
           onClick={refresh}
-          className="flex items-center gap-2 rounded-md border border-slate-700 px-3 py-2 text-sm text-slate-300 transition hover:border-slate-500 hover:text-white"
+          className="flex items-center gap-2 rounded-md border border-line px-3 py-2 text-sm text-ink-subtle transition hover:border-line-strong hover:text-ink"
         >
           <RefreshCw size={15} className={loading ? "animate-spin" : ""} />
           Refresh
@@ -57,18 +57,18 @@ export default function AnalyticsPage() {
 
       <div className="mb-5 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
         {cards.map(([label, value]) => (
-          <div key={label as string} className="rounded-md border border-slate-800 bg-slate-900/70 p-4">
-            <p className="text-xs text-slate-500">{label}</p>
-            <p className="mt-1 text-2xl font-semibold text-white">{value}</p>
+          <div key={label as string} className="rounded-md border border-line-soft bg-panel/70 p-4">
+            <p className="text-xs text-muted">{label}</p>
+            <p className="mt-1 text-2xl font-semibold text-ink">{value}</p>
           </div>
         ))}
       </div>
 
-      <section className="overflow-hidden rounded-md border border-slate-800 bg-slate-900/70">
-        <div className="border-b border-slate-800 px-4 py-3 text-sm font-semibold text-slate-200">Recent Queries</div>
+      <section className="overflow-hidden rounded-md border border-line-soft bg-panel/70">
+        <div className="border-b border-line-soft px-4 py-3 text-sm font-semibold text-ink">Recent Queries</div>
         <div className="overflow-x-auto">
           <table className="w-full min-w-[720px] text-left text-sm">
-            <thead className="bg-slate-950/70 text-xs uppercase tracking-wide text-slate-500">
+            <thead className="bg-canvas/70 text-xs uppercase tracking-wide text-muted">
               <tr>
                 <th className="px-4 py-3">Agent</th>
                 <th className="px-4 py-3">Model</th>
@@ -80,17 +80,17 @@ export default function AnalyticsPage() {
             <tbody>
               {recent.length === 0 ? (
                 <tr>
-                  <td className="px-4 py-8 text-center text-slate-500" colSpan={5}>No recent queries.</td>
+                  <td className="px-4 py-8 text-center text-muted" colSpan={5}>No recent queries.</td>
                 </tr>
               ) : (
                 recent.map((event, index) => (
-                  <tr key={`${event.timestamp}-${index}`} className="border-t border-slate-800">
-                    <td className="px-4 py-3 text-slate-300">{event.agent}</td>
-                    <td className="px-4 py-3 text-slate-400">{event.model}</td>
-                    <td className="max-w-md truncate px-4 py-3 text-slate-300">{event.query}</td>
-                    <td className="px-4 py-3 text-slate-400">{Math.round(event.latency_ms || 0)}ms</td>
+                  <tr key={`${event.timestamp}-${index}`} className="border-t border-line-soft">
+                    <td className="px-4 py-3 text-ink-subtle">{event.agent}</td>
+                    <td className="px-4 py-3 text-muted">{event.model}</td>
+                    <td className="max-w-md truncate px-4 py-3 text-ink-subtle">{event.query}</td>
+                    <td className="px-4 py-3 text-muted">{Math.round(event.latency_ms || 0)}ms</td>
                     <td className="px-4 py-3">
-                      <span className={`rounded-md px-2 py-1 text-xs ${event.success === false ? "bg-rose-400/10 text-rose-200" : "bg-emerald-400/10 text-emerald-200"}`}>
+                      <span className={`rounded-md px-2 py-1 text-xs ${event.success === false ? "bg-danger/10 text-danger-ink" : "bg-success/10 text-success-ink"}`}>
                         {event.success === false ? "Failed" : "Ok"}
                       </span>
                     </td>

@@ -3,10 +3,10 @@ import re
 from pathlib import Path
 from infrastructure.llm.ollama_client import ollama
 from core.config.settings import settings
-from core.config.constants import TASK_RAG, TASK_BI, TASK_MEMORY, TASK_GENERAL
+from core.config.constants import TASK_RAG, TASK_BI, TASK_MEMORY, TASK_GENERAL, TASK_CAREER
 
 _PROMPT = (Path(__file__).parents[2] / "core/prompts/router_prompt.txt").read_text()
-_VALID = {TASK_RAG, TASK_BI, TASK_MEMORY, TASK_GENERAL}
+_VALID = {TASK_RAG, TASK_BI, TASK_MEMORY, TASK_GENERAL, TASK_CAREER}
 
 
 class QueryRouter:
@@ -36,6 +36,6 @@ class QueryRouter:
         return settings.TASK_MODELS.get(task_type, settings.TASK_MODELS[TASK_GENERAL])
 
     def _with_model(self, route: dict) -> dict:
-        task_type = route.get("type", TASK_RAG)
+        task_type = route.get("type", TASK_GENERAL)
         route["model"] = self.model_for_type(task_type)
         return route

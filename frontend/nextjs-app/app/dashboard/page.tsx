@@ -53,25 +53,25 @@ export default function DashboardPage() {
 
     const columns = Object.keys(msg.rows[0]);
     return (
-      <div className="mt-4 overflow-hidden rounded-md border border-slate-700">
+      <div className="mt-4 overflow-hidden rounded-md border border-line">
         {msg.sql && (
-          <details className="border-b border-slate-700 bg-slate-950">
-            <summary className="cursor-pointer px-3 py-2 text-xs font-medium text-slate-400 hover:text-slate-200">
+          <details className="border-b border-line bg-canvas">
+            <summary className="cursor-pointer px-3 py-2 text-xs font-medium text-muted hover:text-ink">
               View generated SQL
             </summary>
-            <pre className="overflow-x-auto border-t border-slate-800 p-3 text-xs text-cyan-200">{msg.sql}</pre>
+            <pre className="overflow-x-auto border-t border-line-soft p-3 text-xs text-brand-ink">{msg.sql}</pre>
           </details>
         )}
         <div className="overflow-x-auto">
           <table className="min-w-full text-left text-xs">
-            <thead className="bg-slate-950 text-slate-500">
+            <thead className="bg-canvas text-muted">
               <tr>{columns.map((column) => <th key={column} className="px-3 py-2">{column}</th>)}</tr>
             </thead>
             <tbody>
               {msg.rows.slice(0, 20).map((row: any, index: number) => (
-                <tr key={index} className="border-t border-slate-800">
+                <tr key={index} className="border-t border-line-soft">
                   {columns.map((column) => (
-                    <td key={column} className="px-3 py-2 text-slate-300">{String(row[column] ?? "")}</td>
+                    <td key={column} className="px-3 py-2 text-ink-subtle">{String(row[column] ?? "")}</td>
                   ))}
                 </tr>
               ))}
@@ -83,15 +83,15 @@ export default function DashboardPage() {
   };
 
   return (
-    <div className="flex h-[calc(100vh-88px)] min-h-[620px] flex-col lg:h-screen lg:min-h-0 lg:flex-row">
-      <section className="border-b border-slate-800 bg-slate-950/70 p-4 lg:w-80 lg:shrink-0 lg:overflow-y-auto lg:border-b-0 lg:border-r lg:p-5">
+    <div className="flex h-[calc(100dvh-176px)] min-h-[560px] flex-col lg:h-dvh lg:min-h-0 lg:flex-row">
+      <section className="border-b border-line-soft bg-panel p-4 lg:w-80 lg:shrink-0 lg:overflow-y-auto lg:border-b-0 lg:border-r lg:p-5">
         <div className="mb-5 flex items-center gap-3">
-          <div className="grid h-9 w-9 place-items-center rounded-md bg-indigo-400/10 text-indigo-300">
+          <div className="grid h-9 w-9 place-items-center rounded-md bg-analytic/10 text-analytic">
             <Database size={18} />
           </div>
           <div>
-            <h1 className="text-sm font-semibold text-white">Datasets</h1>
-            <p className="text-xs text-slate-500">CSV and Excel analysis</p>
+            <h1 className="text-sm font-semibold text-ink">Datasets</h1>
+            <p className="text-xs text-muted">CSV and Excel analysis</p>
           </div>
         </div>
 
@@ -99,23 +99,23 @@ export default function DashboardPage() {
         <button
           onClick={() => fileRef.current?.click()}
           disabled={uploading}
-          className="flex w-full items-center justify-center gap-2 rounded-md bg-cyan-400 px-3 py-2 text-sm font-medium text-slate-950 transition hover:bg-cyan-300 disabled:opacity-50"
+          className="flex w-full items-center justify-center gap-2 rounded-md bg-brand px-3 py-2 text-sm font-medium text-white transition hover:bg-brand-hover disabled:opacity-50"
         >
           <Upload size={15} />
           Upload CSV / Excel
         </button>
 
         {uploadMsg && (
-          <div className="mt-4 rounded-md border border-emerald-400/20 bg-emerald-400/10 px-3 py-2 text-xs text-emerald-200">
+          <div className="mt-4 rounded-md border border-success/20 bg-success/10 px-3 py-2 text-xs text-success-ink">
             {uploadMsg}
           </div>
         )}
 
         <div className="mt-5">
-          <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">Loaded</div>
+          <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted">Loaded</div>
           <div className="space-y-2">
             {datasets.length === 0 ? (
-              <div className="rounded-md border border-dashed border-slate-700 px-3 py-6 text-center text-sm text-slate-500">
+              <div className="rounded-md border border-dashed border-line px-3 py-6 text-center text-sm text-muted">
                 No datasets loaded
               </div>
             ) : (
@@ -125,8 +125,8 @@ export default function DashboardPage() {
                   onClick={() => setActiveDataset(d.name)}
                   className={`w-full rounded-md border px-3 py-2 text-left text-sm transition ${
                     activeDataset === d.name
-                      ? "border-indigo-400 bg-indigo-500 text-white"
-                      : "border-slate-800 bg-slate-900/70 text-slate-300 hover:border-slate-700"
+                      ? "border-analytic bg-analytic text-white"
+                      : "border-line-soft bg-panel/70 text-ink-subtle hover:border-line"
                   }`}
                 >
                   <div className="truncate font-medium">{d.name}</div>
@@ -139,16 +139,16 @@ export default function DashboardPage() {
 
         {lastChart && (
           <div className="mt-5">
-            <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">Last Chart</div>
+            <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted">Last Chart</div>
             <ChartRenderer chart={lastChart} compact />
           </div>
         )}
       </section>
 
       <section className="flex min-h-0 flex-1 flex-col">
-        <header className="border-b border-slate-800 px-5 py-4">
-          <h2 className="text-lg font-semibold text-white">BI Dashboard</h2>
-          <p className="text-sm text-slate-500">
+        <header className="border-b border-line-soft bg-panel px-5 py-4">
+          <h2 className="text-lg font-semibold text-ink">BI Dashboard</h2>
+          <p className="text-sm text-muted">
             {activeDataset ? `Active dataset: ${activeDataset}` : "Upload a dataset to start."}
           </p>
         </header>

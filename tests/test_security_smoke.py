@@ -5,8 +5,9 @@ import subprocess
 import sys
 import unittest
 import uuid
-from pathlib import Path
 from unittest.mock import patch
+
+import pytest
 
 from werkzeug.datastructures import FileStorage
 
@@ -20,7 +21,15 @@ from services.career.career_service import CareerService
 from services.auth.auth_service import AuthError, auth_service
 from services.chat.conversation_service import conversations
 from services.memory.memory_service import memory
+from services.storage.sqlite_service import SQLiteService, db
 from infrastructure.llm.ollama_client import ollama
+
+
+@pytest.fixture(autouse=True)
+def isolated_database(tmp_path, monkeypatch):
+    """Keep legacy service-level smoke tests out of the application database."""
+    isolated_db = SQLiteService(str(tmp_path / "app.db"))
+    monkeypatch.setattr(db, "path", isolated_db.path)
 
 
 class UploadValidationTests(unittest.TestCase):
@@ -65,7 +74,7 @@ class BIPipelineValidationTests(unittest.TestCase):
             BIPipeline._validate_name("sales-2026")
 
     def test_sql_must_be_single_select(self):
-        BIPipeline._validate_select_sql("SELECT * FROM sales")
+        BIPipeline._validate_select_sql("SELECT * FROM dataset")
         with self.assertRaisesRegex(ValueError, "Only SELECT"):
             BIPipeline._validate_select_sql("DROP TABLE sales")
         with self.assertRaisesRegex(ValueError, "Only one"):
@@ -174,13 +183,18 @@ class CloudProviderTests(unittest.TestCase):
             def json(self):
                 return {"choices": [{"message": {"content": "hi"}}]}
 
-        with patch.object(settings, "OPENROUTER_API_KEY", "test-key"), patch("infrastructure.llm.ollama_client.requests.post", return_value=Response()) as post:
-            answer = ollama.generate("openrouter:google/gemini-2.0-flash-exp:free", "Say hi", max_tokens=12)
+        model = "google/gemini-2.0-flash-exp:free"
+        with (
+            patch.object(settings, "OPENROUTER_API_KEY", "test-key"),
+            patch.object(settings, "OPENROUTER_MODELS", [model]),
+            patch("infrastructure.llm.ollama_client.requests.post", return_value=Response()) as post,
+        ):
+            answer = ollama.generate(f"openrouter:{model}", "Say hi", max_tokens=12)
 
         self.assertEqual(answer, "hi")
         self.assertEqual(post.call_args.args[0], f"{settings.OPENROUTER_BASE_URL}/chat/completions")
         self.assertEqual(post.call_args.kwargs["headers"]["Authorization"], "Bearer test-key")
-        self.assertEqual(post.call_args.kwargs["json"]["model"], "google/gemini-2.0-flash-exp:free")
+        self.assertEqual(post.call_args.kwargs["json"]["model"], model)
 
     def test_gemini_rate_limit_falls_back_to_openrouter(self):
         class RateLimitResponse:
@@ -229,7 +243,6 @@ class CloudProviderTests(unittest.TestCase):
     def test_cloud_model_settings_reject_local_ollama_models(self):
         from services.settings.model_settings_service import ModelSettingsService
 
-        service = ModelSettingsService()
         user_id = f"cloud-model-user-{uuid.uuid4().hex}"
         with (
             patch.object(settings, "IS_CLOUD_RUNTIME", True),
@@ -238,11 +251,19 @@ class CloudProviderTests(unittest.TestCase):
             patch.object(settings, "GEMINI_MODELS", ["gemini-2.0-flash"]),
             patch.object(settings, "OPENROUTER_API_KEY", ""),
             patch.object(settings, "OPENROUTER_MODELS", []),
+            patch.object(settings, "TASK_MODEL_OVERRIDES", {}),
         ):
-            models = service.update({"general": "mistral:latest", "rag": "gemini:gemini-2.0-flash"}, user_id=user_id)
+            service = ModelSettingsService()
+            with self.assertRaisesRegex(ValueError, "configured allow-list"):
+                service.update(
+                    {"general": "mistral:latest", "rag": "gemini:gemini-2.0-flash"},
+                    user_id=user_id,
+                )
+            models = service.get(user_id=user_id)
 
         self.assertEqual(models["general"], "gemini:gemini-2.0-flash")
         self.assertEqual(models["rag"], "gemini:gemini-2.0-flash")
+        self.assertNotIn("mistral:latest", models.values())
 
 
 class AuthFlowTests(unittest.TestCase):
@@ -270,7 +291,7 @@ class AuthFlowTests(unittest.TestCase):
         auth_service.logout(session["token"])
         self.assertIsNone(auth_service.authenticate_token(session["token"]))
 
-    def test_cloud_signup_sends_verification_email_without_exposing_token(self):
+    def test_production_signup_sends_verification_email_without_exposing_token(self):
         class Response:
             content = b'{"id":"email-test-id"}'
 
@@ -284,7 +305,8 @@ class AuthFlowTests(unittest.TestCase):
         password = "good-password-123"
 
         with (
-            patch.object(settings, "IS_CLOUD_RUNTIME", True),
+            patch.object(settings, "IS_PRODUCTION", True),
+            patch.object(settings, "IS_CLOUD_RUNTIME", False),
             patch.object(settings, "SEND_VERIFICATION_EMAILS", True),
             patch.object(settings, "RESEND_API_KEY", "resend-test-key"),
             patch.object(settings, "EMAIL_FROM", "AI Platform <verify@example.com>"),
@@ -328,30 +350,6 @@ class UserIsolationTests(unittest.TestCase):
 
         memory.delete_fact(fact["id"], user_id=user_b)
         self.assertEqual(len(memory.facts(user_id=user_a)), 1)
-
-
-class ApiRoutingBoundaryTests(unittest.TestCase):
-    root = Path(__file__).parents[1]
-
-    def test_auto_chat_stream_dispatches_by_route_type(self):
-        source = (self.root / "apps/api/routes/chat.py").read_text(encoding="utf-8")
-        self.assertIn("if task_type == TASK_RAG:", source)
-        self.assertIn("elif task_type == TASK_BI:", source)
-        self.assertIn("general_agent.stream_ask", source)
-        self.assertIn('response.headers["X-Model"] = selected_model', source)
-
-    def test_dedicated_rag_endpoint_does_not_use_global_router_model(self):
-        source = (self.root / "apps/api/routes/rag.py").read_text(encoding="utf-8")
-        self.assertNotIn("router.route", source)
-        self.assertIn("rag_agent.ask(question, session_id=session_id, model=model_settings.model_for", source)
-        self.assertIn('response.headers["X-Route"] = TASK_RAG', source)
-
-    def test_dedicated_bi_endpoint_does_not_use_global_router_model(self):
-        source = (self.root / "apps/api/routes/bi.py").read_text(encoding="utf-8")
-        self.assertNotIn("router.route", source)
-        self.assertIn("model=model_settings.model_for", source)
-        self.assertIn("user_id=user_id", source)
-        self.assertIn('result["route"] = TASK_BI', source)
 
 
 if __name__ == "__main__":

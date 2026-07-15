@@ -6,8 +6,15 @@ from services.storage.sqlite_service import db
 class ModelSettingsService:
     def _defaults(self) -> dict:
         if settings.IS_CLOUD_RUNTIME:
-            return {task: settings.CLOUD_DEFAULT_MODEL for task in DEFAULT_CLOUD_TASK_MODEL_MAP}
-        return DEFAULT_TASK_MODEL_MAP
+            defaults = {task: settings.CLOUD_DEFAULT_MODEL for task in DEFAULT_CLOUD_TASK_MODEL_MAP}
+        else:
+            defaults = dict(DEFAULT_TASK_MODEL_MAP)
+        defaults.update({
+            task: model
+            for task, model in settings.TASK_MODEL_OVERRIDES.items()
+            if task in defaults
+        })
+        return defaults
 
     def _available_models(self) -> set[str]:
         if not settings.IS_CLOUD_RUNTIME:
@@ -19,9 +26,15 @@ class ModelSettingsService:
             models.extend(f"openrouter:{model}" for model in settings.OPENROUTER_MODELS)
         return set(models)
 
+    def available_models(self) -> list[str]:
+        return sorted(self._available_models())
+
     def _valid_model(self, model: str) -> bool:
         if not settings.IS_CLOUD_RUNTIME:
-            return bool(model)
+            return bool(model) and (
+                not settings.IS_PRODUCTION
+                or model in set(settings.LOCAL_ALLOWED_MODELS)
+            )
         return model in self._available_models()
 
     def __init__(self):
@@ -42,10 +55,18 @@ class ModelSettingsService:
         return models
 
     def update(self, task_models: dict[str, str], user_id: str = "local") -> dict:
+        defaults = self._defaults()
+        if not isinstance(task_models, dict) or any(
+            task not in defaults
+            or not isinstance(model, str)
+            or not self._valid_model(model.strip())
+            for task, model in task_models.items()
+        ):
+            raise ValueError("one or more task models are not in the configured allow-list")
         clean = {
             task: model.strip()
             for task, model in task_models.items()
-            if task in self._defaults() and isinstance(model, str) and self._valid_model(model.strip())
+            if task in defaults and isinstance(model, str) and self._valid_model(model.strip())
         }
         if not clean:
             return self.get(user_id=user_id)
@@ -56,7 +77,10 @@ class ModelSettingsService:
         current.update(clean)
         db.execute_many([
             (
-                "INSERT OR REPLACE INTO user_model_settings (user_id, task, model) VALUES (?, ?, ?)",
+                """
+                INSERT INTO user_model_settings (user_id, task, model) VALUES (?, ?, ?)
+                ON CONFLICT (user_id, task) DO UPDATE SET model = excluded.model
+                """,
                 (user_id, task, model),
             )
             for task, model in current.items()
@@ -75,6 +99,12 @@ class ModelSettingsService:
         models = self.get(user_id=user_id)
         return models.get(task) or models.get("general")
 
+    def resolve_model(self, task: str, requested: str | None = None, user_id: str = "local") -> str:
+        model = (requested or "").strip() or self.model_for(task, user_id=user_id)
+        if not self._valid_model(model):
+            raise ValueError("model is not in the configured allow-list")
+        return model
+
     def _apply_saved(self):
         saved = {
             row["task"]: row["model"]
@@ -88,7 +118,10 @@ class ModelSettingsService:
         settings.TASK_MODELS.update(clean)
         db.execute_many([
             (
-                "INSERT OR REPLACE INTO user_model_settings (user_id, task, model) VALUES ('local', ?, ?)",
+                """
+                INSERT INTO user_model_settings (user_id, task, model) VALUES ('local', ?, ?)
+                ON CONFLICT (user_id, task) DO UPDATE SET model = excluded.model
+                """,
                 (task, model),
             )
             for task, model in clean.items()

@@ -134,8 +134,11 @@ class CareerJobService:
             clean["match_mode"] = "both"
         db.execute(
             """
-            INSERT OR REPLACE INTO career_preferences (user_id, preferences_json, updated_at)
+            INSERT INTO career_preferences (user_id, preferences_json, updated_at)
             VALUES (?, ?, ?)
+            ON CONFLICT (user_id) DO UPDATE SET
+              preferences_json = excluded.preferences_json,
+              updated_at = excluded.updated_at
             """,
             (user_id, db.dumps(clean), time.time()),
         )
@@ -152,12 +155,19 @@ class CareerJobService:
         now = time.time()
         db.execute(
             """
-            INSERT OR REPLACE INTO career_profile (user_id, cv_text, updated_at)
+            INSERT INTO career_profile (user_id, cv_text, updated_at)
             VALUES (?, ?, ?)
+            ON CONFLICT (user_id) DO UPDATE SET
+              cv_text = excluded.cv_text,
+              updated_at = excluded.updated_at
             """,
             (user_id, clean, now),
         )
         return {"cv_text": clean, "updated_at": now}
+
+    def delete_profile(self, user_id: str = "local") -> dict[str, Any]:
+        db.execute("DELETE FROM career_profile WHERE user_id = ?", (user_id,))
+        return {"cv_text": "", "updated_at": None}
 
     def list_jobs(self, user_id: str = "local") -> list[dict[str, Any]]:
         self.remove_duplicates(user_id=user_id)
@@ -200,8 +210,14 @@ class CareerJobService:
             ("DELETE FROM career_jobs WHERE id = ? AND user_id = ?", (job_id, user_id)),
         ])
 
-    def search_jobs(self, cv_text: str = "", limit: int = 10, user_id: str = "local") -> dict[str, Any]:
-        preferences = self.preferences(user_id=user_id)
+    def search_jobs(
+        self,
+        cv_text: str = "",
+        limit: int = 10,
+        user_id: str = "local",
+        preferences_override: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        preferences = self._preferences_with_override(user_id=user_id, preferences_override=preferences_override)
         query = self._search_query(preferences, cv_text)
         raw_jobs, searched_sources, skipped_sources = self._fetch_public_jobs(
             query,
@@ -257,8 +273,14 @@ class CareerJobService:
             "errors": errors[:3],
         }
 
-    def stream_search_jobs(self, cv_text: str = "", limit: int = 10, user_id: str = "local"):
-        preferences = self.preferences(user_id=user_id)
+    def stream_search_jobs(
+        self,
+        cv_text: str = "",
+        limit: int = 10,
+        user_id: str = "local",
+        preferences_override: dict[str, Any] | None = None,
+    ):
+        preferences = self._preferences_with_override(user_id=user_id, preferences_override=preferences_override)
         query = self._search_query(preferences, cv_text)
         raw_jobs, searched_sources, skipped_sources = self._fetch_public_jobs(
             query,
@@ -513,9 +535,10 @@ class CareerJobService:
         for job in candidates:
             db.execute(
                 """
-                INSERT OR IGNORE INTO career_score_tasks
+                INSERT INTO career_score_tasks
                 (batch_id, job_id, status, error, created_at, updated_at)
                 VALUES (?, ?, 'queued', NULL, ?, ?)
+                ON CONFLICT (batch_id, job_id) DO NOTHING
                 """,
                 (batch_id, job["id"], now, now),
             )
@@ -727,6 +750,26 @@ class CareerJobService:
         if "analysis" in analysis and isinstance(analysis["analysis"], dict):
             analysis = analysis["analysis"]
         return analysis
+
+    def _preferences_with_override(
+        self,
+        user_id: str = "local",
+        preferences_override: dict[str, Any] | None = None,
+    ) -> dict[str, str]:
+        preferences = self.preferences(user_id=user_id)
+        if not preferences_override:
+            return preferences
+
+        clean = {
+            key: str(preferences_override.get(key, "")).strip()
+            for key in DEFAULT_PREFERENCES
+            if str(preferences_override.get(key, "")).strip()
+        }
+        if clean.get("remote") not in {None, "any", "remote", "hybrid", "onsite"}:
+            clean["remote"] = "any"
+        if clean.get("match_mode") not in {None, "both", "profile", "criteria"}:
+            clean["match_mode"] = "both"
+        return {**preferences, **clean}
 
     @staticmethod
     def _is_good_match(job: dict[str, Any]) -> bool:

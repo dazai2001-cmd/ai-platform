@@ -36,15 +36,15 @@ function VerifyEmailContent() {
 
   return (
     <div className="flex min-h-screen items-center justify-center px-4 py-10">
-      <div className="w-full max-w-md rounded-lg border border-slate-800 bg-slate-950/80 p-6 text-center shadow-2xl shadow-slate-950/30">
-        <div className={`mx-auto mb-4 grid h-12 w-12 place-items-center rounded-md ${state === "ok" ? "bg-emerald-400/12 text-emerald-200" : "bg-slate-800 text-slate-300"}`}>
+      <div className="w-full max-w-md rounded-lg border border-line-soft bg-panel p-6 text-center">
+        <div className={`mx-auto mb-4 grid h-12 w-12 place-items-center rounded-md ${state === "ok" ? "bg-success/12 text-success-ink" : "bg-soft text-ink-subtle"}`}>
           <Icon size={24} />
         </div>
-        <h1 className="text-xl font-semibold text-white">Email verification</h1>
-        <p className="mt-2 text-sm text-slate-400">{message}</p>
+        <h1 className="text-xl font-semibold text-ink">Email verification</h1>
+        <p className="mt-2 text-sm text-muted">{message}</p>
         <Link
           href="/auth"
-          className="mt-6 inline-flex rounded-md bg-cyan-300 px-4 py-2 text-sm font-medium text-slate-950 transition hover:bg-cyan-200"
+          className="mt-6 inline-flex rounded-md bg-brand px-4 py-2 text-sm font-medium text-white transition hover:bg-brand-hover"
         >
           Go to sign in
         </Link>
@@ -55,7 +55,7 @@ function VerifyEmailContent() {
 
 export default function VerifyEmailPage() {
   return (
-    <Suspense fallback={<div className="min-h-screen bg-slate-950" />}>
+    <Suspense fallback={<div className="min-h-screen bg-canvas" />}>
       <VerifyEmailContent />
     </Suspense>
   );

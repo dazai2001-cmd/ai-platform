@@ -3,6 +3,7 @@ import secrets
 import time
 import uuid
 
+from flask import g, has_request_context
 from werkzeug.security import check_password_hash, generate_password_hash
 
 from core.config.settings import settings
@@ -123,7 +124,10 @@ class AuthService:
                     "message": "Could not send email, so a verification link was created instead.",
                 })
 
-        if not (settings.IS_CLOUD_RUNTIME and response["verification_sent"]):
+        # Development may surface a link when email delivery is intentionally
+        # disabled. Production must never expose account-verification secrets
+        # through an API response, regardless of the selected model runtime.
+        if not getattr(settings, "IS_PRODUCTION", False):
             response.update({
                 "verification_token": verification["verification_token"],
                 "verification_url": verification["verification_url"],
@@ -151,11 +155,23 @@ class AuthService:
         return {"token": token, "expires_at": expires_at, "user": self._public_user(user)}
 
     def authenticate_token(self, token: str) -> dict | None:
-        token_hash = self._hash_token((token or "").strip())
+        resolved_token = (token or "").strip()
+        source = "bearer" if resolved_token else ""
+        if not resolved_token and has_request_context():
+            # The app-level auth guard passes the bearer value it found. When
+            # that value is absent, resolve the HttpOnly browser cookie here so
+            # existing non-browser bearer callers keep their exact behavior.
+            from apps.api.auth_context import request_auth_token
+
+            resolved_token, source = request_auth_token()
+        if not resolved_token:
+            return None
+
+        token_hash = self._hash_token(resolved_token)
         now = time.time()
         row = db.query_one(
             """
-            SELECT auth_users.*
+            SELECT auth_users.*, auth_sessions.last_seen_at AS session_last_seen_at
             FROM auth_sessions
             JOIN auth_users ON auth_users.id = auth_sessions.user_id
             WHERE auth_sessions.token_hash = ? AND auth_sessions.expires_at > ?
@@ -164,7 +180,12 @@ class AuthService:
         )
         if not row:
             return None
-        db.execute("UPDATE auth_sessions SET last_seen_at = ? WHERE token_hash = ?", (now, token_hash))
+        # Avoid turning every authenticated read into a SQLite write while
+        # still keeping useful session activity data.
+        if now - float(row.get("session_last_seen_at") or 0) >= 300:
+            db.execute("UPDATE auth_sessions SET last_seen_at = ? WHERE token_hash = ?", (now, token_hash))
+        if has_request_context():
+            g.auth_token_source = source
         return self._public_user(row)
 
     def logout(self, token: str):
