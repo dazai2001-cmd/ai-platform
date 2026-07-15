@@ -292,6 +292,28 @@ class CloudProviderTests(unittest.TestCase):
         self.assertEqual(answer, "fallback ok")
         self.assertEqual(post.call_args_list[1].kwargs["json"]["model"], "openrouter/free")
 
+    def test_gemini_transport_failure_falls_back_to_openrouter(self):
+        class OpenRouterResponse:
+            def raise_for_status(self):
+                return None
+
+            def json(self):
+                return {"choices": [{"message": {"content": "fallback ok"}}]}
+
+        with (
+            patch.object(settings, "GEMINI_API_KEY", "gemini-key"),
+            patch.object(settings, "OPENROUTER_API_KEY", "openrouter-key"),
+            patch.object(settings, "OPENROUTER_MODELS", ["openrouter/free"]),
+            patch(
+                "infrastructure.llm.ollama_client.requests.post",
+                side_effect=[requests.exceptions.Timeout("provider timed out"), OpenRouterResponse()],
+            ) as post,
+        ):
+            answer = ollama.generate("gemini:gemini-3.5-flash", "hello")
+
+        self.assertEqual(answer, "fallback ok")
+        self.assertEqual(post.call_args_list[1].kwargs["json"]["model"], "openrouter/free")
+
     def test_provider_errors_do_not_expose_api_keys(self):
         class Response:
             status_code = 429

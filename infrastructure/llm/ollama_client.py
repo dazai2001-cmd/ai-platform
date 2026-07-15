@@ -254,6 +254,8 @@ class OllamaClient:
         return bool(
             re.search(r"\((?:429 rate limit|5\d\d)\)", message)
             or "Too Many Requests" in message
+            or message == "Gemini request failed."
+            or message == "Gemini returned no user-facing answer."
         )
 
     @staticmethod
