@@ -24,7 +24,13 @@ class CareerService:
     def analyze_fit(self, cv_text: str, job_description: str, model: str | None = None) -> dict[str, Any]:
         prompt = self._analysis_prompt(cv_text, job_description)
         selected_model = self._select_model(model)
-        raw = ollama.generate(selected_model, prompt, temperature=0.1, max_tokens=900)
+        raw = ollama.generate(
+            selected_model,
+            prompt,
+            temperature=0.1,
+            max_tokens=900,
+            json_format=True,
+        )
         result = self._json_or_fallback(raw, "analysis")
         result["model"] = selected_model
         return result
@@ -32,7 +38,13 @@ class CareerService:
     def tailor_cv(self, cv_text: str, job_description: str, model: str | None = None) -> dict[str, Any]:
         prompt = self._tailor_prompt(cv_text, job_description)
         selected_model = self._select_model(model)
-        raw = ollama.generate(selected_model, prompt, temperature=0.2, max_tokens=1100)
+        raw = ollama.generate(
+            selected_model,
+            prompt,
+            temperature=0.2,
+            max_tokens=1100,
+            json_format=True,
+        )
         result = self._json_or_fallback(raw, "tailored_cv")
         result["model"] = selected_model
         return result
@@ -40,7 +52,13 @@ class CareerService:
     def draft_cover_letter(self, cv_text: str, job_description: str, model: str | None = None) -> dict[str, Any]:
         prompt = self._cover_letter_prompt(cv_text, job_description)
         selected_model = self._select_model(model)
-        raw = ollama.generate(selected_model, prompt, temperature=0.35, max_tokens=700)
+        raw = ollama.generate(
+            selected_model,
+            prompt,
+            temperature=0.35,
+            max_tokens=700,
+            json_format=True,
+        )
         result = self._json_or_fallback(raw, "cover_letter")
         result["model"] = selected_model
         return result

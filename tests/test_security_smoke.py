@@ -140,6 +140,19 @@ class ModelRoutingTests(unittest.TestCase):
             settings.TASK_MODELS.clear()
             settings.TASK_MODELS.update(original)
 
+    def test_career_json_workflows_request_structured_output(self):
+        service = CareerService()
+        with patch(
+            "services.career.career_service.ollama.generate",
+            return_value="{}",
+        ) as generate:
+            service.analyze_fit("Python experience", "Python role")
+            service.tailor_cv("Python experience", "Python role")
+            service.draft_cover_letter("Python experience", "Python role")
+
+        self.assertEqual(generate.call_count, 3)
+        self.assertTrue(all(call.kwargs["json_format"] for call in generate.call_args_list))
+
 
 class CloudProviderTests(unittest.TestCase):
     def test_settings_import_in_cloud_runtime(self):
