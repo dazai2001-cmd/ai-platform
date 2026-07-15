@@ -86,12 +86,18 @@ class Settings:
     # Embeddings
     EMBEDDING_PROVIDER = os.getenv(
         "EMBEDDING_PROVIDER",
-        "gemini" if IS_CLOUD_RUNTIME and GEMINI_API_KEY else "local",
+        "hashing" if IS_CLOUD_RUNTIME else "local",
     ).strip().lower()
     EMBED_MODEL = os.getenv("EMBED_MODEL", DEFAULT_EMBED_MODEL)
     GEMINI_EMBED_MODEL = os.getenv("GEMINI_EMBED_MODEL", "gemini-embedding-2").strip()
-    EMBED_DIM = int(os.getenv("EMBED_DIM", str(EMBED_DIM)))
-    EMBED_BATCH_SIZE = int(os.getenv("EMBED_BATCH_SIZE", "32"))
+    EMBED_DIM = int(os.getenv(
+        "EMBED_DIM",
+        "1024" if EMBEDDING_PROVIDER == "hashing" else str(EMBED_DIM),
+    ))
+    EMBED_BATCH_SIZE = int(os.getenv("EMBED_BATCH_SIZE", "100"))
+    EMBED_MAX_RETRIES = int(os.getenv("EMBED_MAX_RETRIES", "4"))
+    EMBED_RETRY_BASE_SECONDS = float(os.getenv("EMBED_RETRY_BASE_SECONDS", "1"))
+    EMBED_RETRY_MAX_SECONDS = float(os.getenv("EMBED_RETRY_MAX_SECONDS", "60"))
 
     # RAG
     CHUNK_SIZE = int(os.getenv("CHUNK_SIZE", DEFAULT_CHUNK_SIZE))
@@ -102,7 +108,11 @@ class Settings:
         (
             f"data/indexes/faiss-{GEMINI_EMBED_MODEL}-{EMBED_DIM}.index"
             if EMBEDDING_PROVIDER == "gemini"
-            else INDEX_PATH
+            else (
+                f"data/indexes/faiss-hashing-v1-{EMBED_DIM}.index"
+                if EMBEDDING_PROVIDER == "hashing"
+                else INDEX_PATH
+            )
         ),
     )
     MAX_URL_INGEST_BYTES = int(os.getenv("MAX_URL_INGEST_BYTES", "5242880"))

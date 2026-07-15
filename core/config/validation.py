@@ -84,6 +84,8 @@ def configuration_issues(config=settings) -> list[ConfigurationIssue]:
         "TOP_K": config.TOP_K,
         "EMBED_DIM": getattr(config, "EMBED_DIM", 384),
         "EMBED_BATCH_SIZE": getattr(config, "EMBED_BATCH_SIZE", 32),
+        "EMBED_RETRY_BASE_SECONDS": getattr(config, "EMBED_RETRY_BASE_SECONDS", 1),
+        "EMBED_RETRY_MAX_SECONDS": getattr(config, "EMBED_RETRY_MAX_SECONDS", 60),
         "DATABASE_CONNECT_TIMEOUT_SECONDS": config.DATABASE_CONNECT_TIMEOUT_SECONDS,
         "DATABASE_POOL_MIN_SIZE": config.DATABASE_POOL_MIN_SIZE,
         "DATABASE_POOL_MAX_SIZE": config.DATABASE_POOL_MAX_SIZE,
@@ -96,10 +98,23 @@ def configuration_issues(config=settings) -> list[ConfigurationIssue]:
         issues.append(ConfigurationIssue("CHUNK_OVERLAP", "must be non-negative and smaller than CHUNK_SIZE"))
 
     embedding_provider = getattr(config, "EMBEDDING_PROVIDER", "local")
-    if embedding_provider not in {"local", "gemini"}:
+    if embedding_provider not in {"local", "gemini", "hashing"}:
         issues.append(ConfigurationIssue(
             "EMBEDDING_PROVIDER",
-            "must be either 'local' or 'gemini'",
+            "must be 'local', 'gemini', or 'hashing'",
+        ))
+    if getattr(config, "EMBED_MAX_RETRIES", 4) < 0:
+        issues.append(ConfigurationIssue(
+            "EMBED_MAX_RETRIES",
+            "must be zero or greater",
+        ))
+    if (
+        getattr(config, "EMBED_RETRY_BASE_SECONDS", 1)
+        > getattr(config, "EMBED_RETRY_MAX_SECONDS", 60)
+    ):
+        issues.append(ConfigurationIssue(
+            "EMBED_RETRY_BASE_SECONDS",
+            "must not be greater than EMBED_RETRY_MAX_SECONDS",
         ))
     if embedding_provider == "gemini" and not config.GEMINI_API_KEY:
         issues.append(ConfigurationIssue(

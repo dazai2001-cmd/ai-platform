@@ -1,9 +1,23 @@
+import hashlib
+import random
+import re
+import time
+import unicodedata
 from functools import lru_cache
 
 import numpy as np
 import requests
 
 from core.config.settings import settings
+
+
+_STOP_WORDS = frozenset({
+    "a", "an", "and", "are", "as", "at", "be", "been", "but", "by",
+    "for", "from", "had", "has", "have", "he", "her", "his", "i", "in",
+    "is", "it", "its", "of", "on", "or", "she", "that", "the", "their",
+    "they", "this", "to", "was", "were", "what", "when", "where", "which",
+    "who", "will", "with", "you", "your",
+})
 
 
 class Embedder:
@@ -19,6 +33,11 @@ class Embedder:
         if self.provider == "gemini":
             if not settings.GEMINI_API_KEY:
                 raise RuntimeError("GEMINI_API_KEY is required for Gemini embeddings")
+            self.dim = settings.EMBED_DIM
+            return
+
+        if self.provider == "hashing":
+            self.model_name = "feature-hashing-v1"
             self.dim = settings.EMBED_DIM
             return
 
@@ -42,6 +61,8 @@ class Embedder:
 
         if self.provider == "gemini":
             return self._embed_gemini(texts, task_type)
+        if self.provider == "hashing":
+            return np.vstack([self._embed_hashing(text) for text in texts])
 
         vectors = self.model.encode(
             texts,
@@ -84,13 +105,7 @@ class Embedder:
                         for text in batch
                     ]
                 }
-                response = requests.post(
-                    endpoint,
-                    headers={"x-goog-api-key": settings.GEMINI_API_KEY},
-                    json=payload,
-                    timeout=settings.OLLAMA_TIMEOUT_SECONDS,
-                )
-                response.raise_for_status()
+                response = self._post_gemini_with_retry(endpoint, payload)
                 data = response.json()
                 embeddings = data.get("embeddings", []) if isinstance(data, dict) else []
                 if len(embeddings) != len(batch):
@@ -106,6 +121,77 @@ class Embedder:
             raise RuntimeError(f"Gemini embedding request failed{detail}") from exc
 
         return np.asarray(vectors, dtype=np.float32)
+
+    def _post_gemini_with_retry(self, endpoint: str, payload: dict):
+        for attempt in range(settings.EMBED_MAX_RETRIES + 1):
+            try:
+                response = requests.post(
+                    endpoint,
+                    headers={"x-goog-api-key": settings.GEMINI_API_KEY},
+                    json=payload,
+                    timeout=settings.OLLAMA_TIMEOUT_SECONDS,
+                )
+                status = response.status_code
+                retryable = status in {408, 429} or status >= 500
+                if retryable and attempt < settings.EMBED_MAX_RETRIES:
+                    retry_after = response.headers.get("Retry-After", "").strip()
+                    try:
+                        delay = float(retry_after)
+                    except ValueError:
+                        delay = settings.EMBED_RETRY_BASE_SECONDS * (2 ** attempt)
+                    delay = min(delay, settings.EMBED_RETRY_MAX_SECONDS)
+                    time.sleep(delay + random.uniform(0, min(0.5, delay / 4)))
+                    continue
+                response.raise_for_status()
+                return response
+            except requests.exceptions.RequestException as exc:
+                status = getattr(exc.response, "status_code", None)
+                retryable = status is None or status in {408, 429} or status >= 500
+                if not retryable:
+                    raise
+                if attempt >= settings.EMBED_MAX_RETRIES:
+                    raise
+                delay = min(
+                    settings.EMBED_RETRY_BASE_SECONDS * (2 ** attempt),
+                    settings.EMBED_RETRY_MAX_SECONDS,
+                )
+                time.sleep(delay + random.uniform(0, min(0.5, delay / 4)))
+        raise RuntimeError("Gemini embedding retry loop ended unexpectedly")
+
+    def _embed_hashing(self, text: str) -> np.ndarray:
+        normalized = unicodedata.normalize("NFKC", text).casefold()
+        tokens = [
+            token
+            for token in re.findall(r"[\w'-]+", normalized, flags=re.UNICODE)
+            if len(token) > 1 and token not in _STOP_WORDS
+        ]
+        features: list[tuple[str, float]] = [(f"w:{token}", 1.0) for token in tokens]
+        features.extend(
+            (f"b:{left}_{right}", 1.25)
+            for left, right in zip(tokens, tokens[1:])
+        )
+        features.extend(
+            (f"c:{token[index:index + 3]}", 0.3)
+            for token in tokens
+            if len(token) >= 4
+            for index in range(len(token) - 2)
+        )
+
+        vector = np.zeros(self.dim, dtype=np.float32)
+        for feature, weight in features:
+            digest = hashlib.blake2b(
+                feature.encode("utf-8"),
+                digest_size=8,
+                person=b"aiplat-v1",
+            ).digest()
+            index = int.from_bytes(digest[:4], "little") % self.dim
+            sign = 1.0 if digest[4] & 1 else -1.0
+            vector[index] += sign * weight
+
+        norm = float(np.linalg.norm(vector))
+        if norm:
+            vector /= norm
+        return vector
 
     def _prepare_text(self, text: str, task_type: str) -> str:
         if self.model_name != "gemini-embedding-2":

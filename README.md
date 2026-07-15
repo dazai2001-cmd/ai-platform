@@ -706,12 +706,17 @@ EMBEDDING_PROVIDER=local
 EMBED_MODEL=all-MiniLM-L6-v2
 GEMINI_EMBED_MODEL=gemini-embedding-2
 EMBED_DIM=384
-EMBED_BATCH_SIZE=32
+EMBED_BATCH_SIZE=100
+EMBED_MAX_RETRIES=4
+EMBED_RETRY_BASE_SECONDS=1
+EMBED_RETRY_MAX_SECONDS=60
 ```
 
-Use `EMBEDDING_PROVIDER=gemini` on memory-constrained cloud services. This
-keeps SentenceTransformers/PyTorch local while the hosted API uses the Gemini
-embedding endpoint with the same API key as chat.
+Use `EMBEDDING_PROVIDER=hashing` with `EMBED_DIM=1024` on memory-constrained
+or free-tier cloud services. It provides a deterministic local knowledge index
+without loading SentenceTransformers/PyTorch or consuming an embedding API
+quota. `EMBEDDING_PROVIDER=gemini` remains available for paid-tier semantic
+embeddings and automatically retries transient 429 and 5xx responses.
 
 ### Redis
 

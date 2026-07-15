@@ -9,10 +9,17 @@ from infrastructure.embeddings.embedder import Embedder
 
 
 class _EmbeddingResponse:
-    def __init__(self, embeddings):
+    def __init__(self, embeddings, status_code=200, headers=None):
         self._embeddings = embeddings
+        self.status_code = status_code
+        self.headers = headers or {}
 
     def raise_for_status(self):
+        if self.status_code >= 400:
+            raise requests.exceptions.HTTPError(
+                f"HTTP {self.status_code}",
+                response=self,
+            )
         return None
 
     def json(self):
@@ -73,6 +80,7 @@ def test_gemini_embedding_errors_do_not_expose_api_key(monkeypatch):
     monkeypatch.setattr(settings, "GEMINI_API_KEY", "secret-key")
     monkeypatch.setattr(settings, "GEMINI_EMBED_MODEL", "gemini-embedding-2")
     monkeypatch.setattr(settings, "EMBED_DIM", 3)
+    monkeypatch.setattr(settings, "EMBED_MAX_RETRIES", 0)
     monkeypatch.setattr("infrastructure.embeddings.embedder.requests.post", post)
 
     with pytest.raises(RuntimeError, match=r"Gemini embedding request failed \(HTTP 429\)") as error:
@@ -93,3 +101,48 @@ def test_gemini_embedding_rejects_incomplete_batch(monkeypatch):
 
     with pytest.raises(RuntimeError, match="incomplete embedding batch"):
         Embedder().embed_batch(["alpha"])
+
+
+def test_gemini_embedding_retries_transient_rate_limit(monkeypatch):
+    responses = [
+        _EmbeddingResponse([], status_code=429, headers={"Retry-After": "2"}),
+        _EmbeddingResponse([{"values": [1.0, 2.0, 3.0]}]),
+    ]
+    sleeps = []
+
+    monkeypatch.setattr(settings, "EMBEDDING_PROVIDER", "gemini")
+    monkeypatch.setattr(settings, "GEMINI_API_KEY", "secret-key")
+    monkeypatch.setattr(settings, "GEMINI_EMBED_MODEL", "gemini-embedding-2")
+    monkeypatch.setattr(settings, "EMBED_DIM", 3)
+    monkeypatch.setattr(settings, "EMBED_MAX_RETRIES", 2)
+    monkeypatch.setattr(settings, "EMBED_RETRY_BASE_SECONDS", 1)
+    monkeypatch.setattr(settings, "EMBED_RETRY_MAX_SECONDS", 60)
+    monkeypatch.setattr(
+        "infrastructure.embeddings.embedder.requests.post",
+        lambda *_args, **_kwargs: responses.pop(0),
+    )
+    monkeypatch.setattr("infrastructure.embeddings.embedder.random.uniform", lambda *_: 0)
+    monkeypatch.setattr("infrastructure.embeddings.embedder.time.sleep", sleeps.append)
+
+    vector = Embedder().embed("question")
+
+    assert vector.tolist() == [1.0, 2.0, 3.0]
+    assert sleeps == [2.0]
+
+
+def test_hashing_embeddings_are_deterministic_normalized_and_relevant(monkeypatch):
+    monkeypatch.setattr(settings, "EMBEDDING_PROVIDER", "hashing")
+    monkeypatch.setattr(settings, "EMBED_DIM", 1024)
+    embedder = Embedder()
+
+    documents = embedder.embed_batch([
+        "Megan Thee Stallion is a rapper from Houston, Texas.",
+        "Quantum mechanics describes matter at microscopic scales.",
+    ])
+    query = embedder.embed("Megan Stallion Houston rapper")
+    repeated = embedder.embed("Megan Stallion Houston rapper")
+
+    assert documents.shape == (2, 1024)
+    assert np.allclose(np.linalg.norm(documents, axis=1), [1.0, 1.0])
+    assert np.allclose(query, repeated)
+    assert np.linalg.norm(documents[0] - query) < np.linalg.norm(documents[1] - query)
