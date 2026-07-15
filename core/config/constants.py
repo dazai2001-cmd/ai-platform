@@ -7,7 +7,7 @@ TASK_CAREER = "career"
 MODEL_QWEN = "qwen3:8b"
 MODEL_LLAMA = "llama3:latest"
 MODEL_MISTRAL = "mistral:latest"
-MODEL_GEMINI_FLASH = "gemini:gemini-2.0-flash"
+MODEL_GEMINI_FLASH = "gemini:gemini-3.5-flash"
 
 DEFAULT_TASK_MODEL_MAP = {
     TASK_RAG: MODEL_QWEN,

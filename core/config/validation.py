@@ -82,6 +82,8 @@ def configuration_issues(config=settings) -> list[ConfigurationIssue]:
         "ANALYTICS_RETENTION_DAYS": config.ANALYTICS_RETENTION_DAYS,
         "CHUNK_SIZE": config.CHUNK_SIZE,
         "TOP_K": config.TOP_K,
+        "EMBED_DIM": getattr(config, "EMBED_DIM", 384),
+        "EMBED_BATCH_SIZE": getattr(config, "EMBED_BATCH_SIZE", 32),
         "DATABASE_CONNECT_TIMEOUT_SECONDS": config.DATABASE_CONNECT_TIMEOUT_SECONDS,
         "DATABASE_POOL_MIN_SIZE": config.DATABASE_POOL_MIN_SIZE,
         "DATABASE_POOL_MAX_SIZE": config.DATABASE_POOL_MAX_SIZE,
@@ -92,6 +94,18 @@ def configuration_issues(config=settings) -> list[ConfigurationIssue]:
 
     if config.CHUNK_OVERLAP < 0 or config.CHUNK_OVERLAP >= config.CHUNK_SIZE:
         issues.append(ConfigurationIssue("CHUNK_OVERLAP", "must be non-negative and smaller than CHUNK_SIZE"))
+
+    embedding_provider = getattr(config, "EMBEDDING_PROVIDER", "local")
+    if embedding_provider not in {"local", "gemini"}:
+        issues.append(ConfigurationIssue(
+            "EMBEDDING_PROVIDER",
+            "must be either 'local' or 'gemini'",
+        ))
+    if embedding_provider == "gemini" and not config.GEMINI_API_KEY:
+        issues.append(ConfigurationIssue(
+            "GEMINI_API_KEY",
+            "is required when Gemini embeddings are enabled",
+        ))
 
     if config.TRUST_PROXY_HOPS < 0:
         issues.append(ConfigurationIssue("TRUST_PROXY_HOPS", "must be zero or greater"))

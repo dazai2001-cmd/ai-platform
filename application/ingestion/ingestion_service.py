@@ -37,7 +37,21 @@ class IngestionService:
         self._validate_public_url(url)
         html = self._read_limited_url(url)
         soup = BeautifulSoup(html, "html.parser")
-        text = soup.get_text(separator=" ", strip=True)
+        for element in soup.select(
+            "script, style, noscript, nav, header, footer, aside, form, button, svg"
+        ):
+            element.decompose()
+        content = (
+            soup.select_one("article")
+            or soup.select_one("main")
+            or soup.select_one("[role='main']")
+            or soup.select_one("#content")
+            or soup.body
+            or soup
+        )
+        text = content.get_text(separator=" ", strip=True)
+        if len(text) > settings.MAX_TEXT_INGEST_CHARS:
+            raise ValueError("URL text exceeds the ingestion limit")
         return self._ingest_text(text, source=url, extra={"type": "url", **(extra or {})})
 
     def ingest_text(self, text: str, source: str = "note", extra: dict = None) -> int:

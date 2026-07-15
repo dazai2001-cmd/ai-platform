@@ -50,7 +50,7 @@ class Settings:
     GEMINI_BASE_URL = os.getenv("GEMINI_BASE_URL", "https://generativelanguage.googleapis.com/v1beta").rstrip("/")
     GEMINI_MODELS = [
         model.strip()
-        for model in os.getenv("GEMINI_MODELS", "gemini-2.0-flash").split(",")
+        for model in os.getenv("GEMINI_MODELS", "gemini-3.5-flash").split(",")
         if model.strip()
     ]
     OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "").strip()
@@ -84,13 +84,27 @@ class Settings:
     ]
 
     # Embeddings
+    EMBEDDING_PROVIDER = os.getenv(
+        "EMBEDDING_PROVIDER",
+        "gemini" if IS_CLOUD_RUNTIME and GEMINI_API_KEY else "local",
+    ).strip().lower()
     EMBED_MODEL = os.getenv("EMBED_MODEL", DEFAULT_EMBED_MODEL)
+    GEMINI_EMBED_MODEL = os.getenv("GEMINI_EMBED_MODEL", "gemini-embedding-2").strip()
+    EMBED_DIM = int(os.getenv("EMBED_DIM", str(EMBED_DIM)))
+    EMBED_BATCH_SIZE = int(os.getenv("EMBED_BATCH_SIZE", "32"))
 
     # RAG
     CHUNK_SIZE = int(os.getenv("CHUNK_SIZE", DEFAULT_CHUNK_SIZE))
     CHUNK_OVERLAP = int(os.getenv("CHUNK_OVERLAP", DEFAULT_CHUNK_OVERLAP))
     TOP_K = int(os.getenv("TOP_K", DEFAULT_TOP_K))
-    INDEX_PATH = os.getenv("INDEX_PATH", INDEX_PATH)
+    INDEX_PATH = os.getenv(
+        "INDEX_PATH",
+        (
+            f"data/indexes/faiss-{GEMINI_EMBED_MODEL}-{EMBED_DIM}.index"
+            if EMBEDDING_PROVIDER == "gemini"
+            else INDEX_PATH
+        ),
+    )
     MAX_URL_INGEST_BYTES = int(os.getenv("MAX_URL_INGEST_BYTES", "5242880"))
     MAX_UPLOAD_BYTES = int(os.getenv("MAX_UPLOAD_BYTES", str(50 * 1024 * 1024)))
     MAX_JSON_BYTES = int(os.getenv("MAX_JSON_BYTES", str(1024 * 1024)))

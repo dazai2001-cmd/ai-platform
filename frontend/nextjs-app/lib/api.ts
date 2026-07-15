@@ -210,6 +210,7 @@ export const api = {
     return upload("/api/rag/upload/pdf/async", fd);
   },
   ragUploadUrl: (url: string) => post("/api/rag/upload/url", { url }),
+  ragUploadUrlAsync: (url: string) => post("/api/rag/upload/url/async", { url }),
   ragUploadText: (text: string, source: string) =>
     post("/api/rag/upload/text", { text, source }),
   ragStats: () => get("/api/rag/stats"),

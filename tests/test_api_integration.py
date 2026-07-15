@@ -481,6 +481,49 @@ def test_url_ingestion_checks_capacity_and_passes_authenticated_user(client, mon
     assert ingest_url.call_count == 1
 
 
+def test_async_url_ingestion_returns_before_embedding_and_releases_reservation(client, monkeypatch):
+    session = _create_verified_session(client, "async-url-owner@example.com")
+    user_id = session["user"]["id"]
+
+    from apps.api.routes import rag as rag_routes
+
+    started = {}
+    ingest_url = Mock(return_value=6)
+    monkeypatch.setattr(rag_routes.rag_agent, "documents", Mock(return_value=[]))
+    monkeypatch.setattr(rag_routes.rag_agent, "ingest_url", ingest_url)
+
+    def start(label, fn, user_id):
+        started.update(label=label, fn=fn, user_id=user_id)
+        return {"id": "url-job-1", "status": "queued"}
+
+    monkeypatch.setattr(rag_routes.jobs, "start", start)
+
+    response = client.post(
+        "/api/rag/upload/url/async",
+        json={"url": "https://example.com/long-guide"},
+        headers=_bearer(session["token"]),
+    )
+
+    assert response.status_code == 202
+    assert response.get_json() == {
+        "job_id": "url-job-1",
+        "status": "queued",
+        "url": "https://example.com/long-guide",
+    }
+    assert started["user_id"] == user_id
+    assert started["label"] == "Ingest https://example.com/long-guide"
+    assert ingest_url.call_count == 0
+
+    assert started["fn"]() == {
+        "url": "https://example.com/long-guide",
+        "chunks": 6,
+    }
+    ingest_url.assert_called_once_with(
+        "https://example.com/long-guide",
+        user_id=user_id,
+    )
+
+
 def test_bi_csv_upload_selects_csv_loader_and_passes_owner(client, monkeypatch, tmp_path):
     session = _create_verified_session(client, "csv-owner@example.com")
     user_id = session["user"]["id"]

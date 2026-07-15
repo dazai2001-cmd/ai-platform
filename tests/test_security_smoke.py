@@ -147,7 +147,7 @@ class CloudProviderTests(unittest.TestCase):
             **os.environ,
             "AI_RUNTIME": "cloud",
             "GEMINI_API_KEY": "test-key",
-            "GEMINI_MODELS": "gemini-2.0-flash",
+            "GEMINI_MODELS": "gemini-3.5-flash",
         }
         result = subprocess.run(
             [sys.executable, "-c", "from core.config.settings import settings; print(settings.TASK_MODELS['general'])"],
@@ -157,7 +157,7 @@ class CloudProviderTests(unittest.TestCase):
             timeout=15,
         )
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(result.stdout.strip(), "gemini:gemini-2.0-flash")
+        self.assertEqual(result.stdout.strip(), "gemini:gemini-3.5-flash")
 
     def test_gemini_generate_uses_generate_content_api(self):
         class Response:
@@ -168,12 +168,41 @@ class CloudProviderTests(unittest.TestCase):
                 return {"candidates": [{"content": {"parts": [{"text": "hello"}]}}]}
 
         with patch.object(settings, "GEMINI_API_KEY", "test-key"), patch("infrastructure.llm.ollama_client.requests.post", return_value=Response()) as post:
-            answer = ollama.generate("gemini:gemini-2.0-flash", "Say hello", max_tokens=12)
+            answer = ollama.generate("gemini:gemini-3.5-flash", "Say hello", max_tokens=12)
 
         self.assertEqual(answer, "hello")
-        self.assertIn("/models/gemini-2.0-flash:generateContent", post.call_args.args[0])
+        self.assertIn("/models/gemini-3.5-flash:generateContent", post.call_args.args[0])
         self.assertEqual(post.call_args.kwargs["params"]["key"], "test-key")
         self.assertEqual(post.call_args.kwargs["json"]["contents"][0]["parts"][0]["text"], "Say hello")
+
+    def test_gemini_retries_internal_label_and_ignores_thought_parts(self):
+        class Response:
+            def __init__(self, parts):
+                self.parts = parts
+
+            def raise_for_status(self):
+                return None
+
+            def json(self):
+                return {"candidates": [{"content": {"parts": self.parts}}]}
+
+        responses = [
+            Response([{"text": "User Safety: safe"}]),
+            Response([
+                {"text": "Internal analysis", "thought": True},
+                {"text": "Hey! How can I help?"},
+            ]),
+        ]
+        with (
+            patch.object(settings, "GEMINI_API_KEY", "test-key"),
+            patch("infrastructure.llm.ollama_client.requests.post", side_effect=responses) as post,
+        ):
+            answer = ollama.generate("gemini:gemini-3.5-flash", "Say hello")
+
+        self.assertEqual(answer, "Hey! How can I help?")
+        self.assertEqual(post.call_count, 2)
+        retry_prompt = post.call_args_list[1].kwargs["json"]["contents"][0]["parts"][0]["text"]
+        self.assertIn("Return only the user-facing answer", retry_prompt)
 
     def test_openrouter_generate_uses_chat_completions_api(self):
         class Response:
@@ -216,7 +245,7 @@ class CloudProviderTests(unittest.TestCase):
             patch.object(settings, "OPENROUTER_MODELS", ["google/gemini-2.0-flash-exp:free"]),
             patch("infrastructure.llm.ollama_client.requests.post", side_effect=[RateLimitResponse(), OpenRouterResponse()]) as post,
         ):
-            answer = ollama.generate("gemini:gemini-2.0-flash", "hello")
+            answer = ollama.generate("gemini:gemini-3.5-flash", "hello")
 
         self.assertEqual(answer, "fallback ok")
         self.assertEqual(post.call_args_list[1].kwargs["json"]["model"], "google/gemini-2.0-flash-exp:free")
@@ -238,7 +267,7 @@ class CloudProviderTests(unittest.TestCase):
             patch("infrastructure.llm.ollama_client.requests.post", return_value=Response()),
         ):
             with self.assertRaisesRegex(RuntimeError, "Gemini request failed \\(429 rate limit\\)"):
-                ollama.generate("gemini:gemini-2.0-flash", "hello")
+                ollama.generate("gemini:gemini-3.5-flash", "hello")
 
     def test_cloud_model_settings_reject_local_ollama_models(self):
         from services.settings.model_settings_service import ModelSettingsService
@@ -246,9 +275,9 @@ class CloudProviderTests(unittest.TestCase):
         user_id = f"cloud-model-user-{uuid.uuid4().hex}"
         with (
             patch.object(settings, "IS_CLOUD_RUNTIME", True),
-            patch.object(settings, "CLOUD_DEFAULT_MODEL", "gemini:gemini-2.0-flash"),
+            patch.object(settings, "CLOUD_DEFAULT_MODEL", "gemini:gemini-3.5-flash"),
             patch.object(settings, "GEMINI_API_KEY", "test-key"),
-            patch.object(settings, "GEMINI_MODELS", ["gemini-2.0-flash"]),
+            patch.object(settings, "GEMINI_MODELS", ["gemini-3.5-flash"]),
             patch.object(settings, "OPENROUTER_API_KEY", ""),
             patch.object(settings, "OPENROUTER_MODELS", []),
             patch.object(settings, "TASK_MODEL_OVERRIDES", {}),
@@ -256,13 +285,13 @@ class CloudProviderTests(unittest.TestCase):
             service = ModelSettingsService()
             with self.assertRaisesRegex(ValueError, "configured allow-list"):
                 service.update(
-                    {"general": "mistral:latest", "rag": "gemini:gemini-2.0-flash"},
+                    {"general": "mistral:latest", "rag": "gemini:gemini-3.5-flash"},
                     user_id=user_id,
                 )
             models = service.get(user_id=user_id)
 
-        self.assertEqual(models["general"], "gemini:gemini-2.0-flash")
-        self.assertEqual(models["rag"], "gemini:gemini-2.0-flash")
+        self.assertEqual(models["general"], "gemini:gemini-3.5-flash")
+        self.assertEqual(models["rag"], "gemini:gemini-3.5-flash")
         self.assertNotIn("mistral:latest", models.values())
 
 

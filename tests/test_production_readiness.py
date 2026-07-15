@@ -169,11 +169,11 @@ def test_cloud_provider_models_are_allow_listed():
     with (
         patch.object(settings, "IS_CLOUD_RUNTIME", True),
         patch.object(settings, "GEMINI_API_KEY", "configured"),
-        patch.object(settings, "GEMINI_MODELS", ["gemini-2.0-flash"]),
+        patch.object(settings, "GEMINI_MODELS", ["gemini-3.5-flash"]),
         patch.object(settings, "OPENROUTER_API_KEY", ""),
         patch.object(settings, "OPENROUTER_MODELS", []),
     ):
-        assert ollama._provider_for("gemini:gemini-2.0-flash") == ("gemini", "gemini-2.0-flash")
+        assert ollama._provider_for("gemini:gemini-3.5-flash") == ("gemini", "gemini-3.5-flash")
         with pytest.raises(ValueError, match="allow-list"):
             ollama._provider_for("gemini:unapproved-expensive-model")
         with pytest.raises(ValueError, match="configured provider"):

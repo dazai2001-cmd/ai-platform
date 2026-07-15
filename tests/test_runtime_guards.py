@@ -51,14 +51,14 @@ class ConfigurationValidationTests(unittest.TestCase):
         self.assertIn("SECRET_KEY", message)
 
     def test_memory_rate_limit_storage_is_a_cloud_warning_not_a_startup_error(self):
-        cloud_model = "gemini:gemini-2.0-flash"
+        cloud_model = "gemini:gemini-3.5-flash"
         config = _config(
             APP_ENV="development",
             IS_PRODUCTION=False,
             AI_RUNTIME="cloud",
             IS_CLOUD_RUNTIME=True,
             GEMINI_API_KEY="configured",
-            GEMINI_MODELS=["gemini-2.0-flash"],
+            GEMINI_MODELS=["gemini-3.5-flash"],
             CLOUD_DEFAULT_MODEL=cloud_model,
             ROUTER_MODEL=cloud_model,
             TASK_MODELS={task: cloud_model for task in settings.TASK_MODELS},

@@ -183,6 +183,38 @@ def upload_url():
             reservation.release()
 
 
+@rag_bp.post("/upload/url/async")
+def upload_url_async():
+    reservation = None
+    try:
+        url = _validated_source((request.json or {}).get("url"))
+        user_id = current_user_id()
+        reservation = _reserve_document(user_id, url)
+        owned_reservation = reservation
+
+        def ingest(
+            url_to_ingest=url,
+            document_reservation=owned_reservation,
+            owner_id=user_id,
+        ):
+            try:
+                count = rag_agent.ingest_url(url_to_ingest, user_id=owner_id)
+                return {"url": url_to_ingest, "chunks": count}
+            finally:
+                document_reservation.release()
+
+        job = jobs.start(f"Ingest {url}", ingest, user_id=user_id)
+        reservation = None  # The background job now owns the quota reservation.
+        return jsonify({"job_id": job["id"], "status": job["status"], "url": url}), 202
+    except ValueError as e:
+        return error_response(e, 400)
+    except Exception as e:
+        return error_response(e, 500)
+    finally:
+        if reservation:
+            reservation.release()
+
+
 @rag_bp.post("/upload/text")
 def upload_text():
     data = request.json or {}

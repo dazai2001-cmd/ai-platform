@@ -243,7 +243,7 @@ In cloud mode, task models can be mapped to Gemini/OpenRouter model IDs.
 Example cloud model IDs shown to the app:
 
 ```text
-gemini:gemini-2.0-flash
+gemini:gemini-3.5-flash
 openrouter:openrouter/free
 ```
 
@@ -629,7 +629,7 @@ DATABASE_SCHEMA=app_private
 DATABASE_SSLMODE=require
 
 GEMINI_API_KEY=your_gemini_key
-GEMINI_MODELS=gemini-2.0-flash
+GEMINI_MODELS=gemini-3.5-flash
 
 OPENROUTER_API_KEY=your_openrouter_key
 OPENROUTER_MODELS=openrouter/free
@@ -685,7 +685,7 @@ LLM_MAX_TOKENS=768
 
 ```env
 GEMINI_API_KEY=
-GEMINI_MODELS=gemini-2.0-flash
+GEMINI_MODELS=gemini-3.5-flash
 
 OPENROUTER_API_KEY=
 OPENROUTER_MODELS=openrouter/free
@@ -702,8 +702,16 @@ ROUTER_MODEL=qwen3:8b
 ### Embeddings
 
 ```env
+EMBEDDING_PROVIDER=local
 EMBED_MODEL=all-MiniLM-L6-v2
+GEMINI_EMBED_MODEL=gemini-embedding-2
+EMBED_DIM=384
+EMBED_BATCH_SIZE=32
 ```
+
+Use `EMBEDDING_PROVIDER=gemini` on memory-constrained cloud services. This
+keeps SentenceTransformers/PyTorch local while the hosted API uses the Gemini
+embedding endpoint with the same API key as chat.
 
 ### Redis
 

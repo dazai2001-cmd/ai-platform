@@ -105,6 +105,29 @@ describe("API client", () => {
     expect(options.signal).toBeInstanceOf(AbortSignal);
   });
 
+  it("starts URL ingestion through the asynchronous job endpoint", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ job_id: "url-job-1", status: "queued" }), {
+        status: 202,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const { api } = await import("./api");
+
+    await expect(api.ragUploadUrlAsync("https://example.com/guide")).resolves.toEqual({
+      job_id: "url-job-1",
+      status: "queued",
+    });
+    expect(fetchMock).toHaveBeenCalledWith("/api/rag/upload/url/async", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ url: "https://example.com/guide" }),
+      credentials: "include",
+      signal: expect.any(AbortSignal),
+    });
+  });
+
   it("uploads a CV file as multipart form data", async () => {
     const imported = {
       cv_text: "Experienced platform engineer",

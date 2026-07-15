@@ -60,19 +60,41 @@ export default function BrainPage() {
 
   const handleUrlIngest = async () => {
     if (!urlInput.trim()) return;
+    const url = urlInput.trim();
     setUploading(true);
     setUploadMsg("");
     setUploadError(false);
+    setUploadProgress(5);
     try {
-      const res = await api.ragUploadUrl(urlInput.trim());
-      setUploadMsg(res.error || `URL ingested - ${res.chunks ?? 0} chunks`);
-      setUploadError(Boolean(res.error));
-      if (!res.error) setUrlInput("");
+      const started = await api.ragUploadUrlAsync(url);
+      setUploadMsg("Fetching and indexing URL...");
+      setUploadProgress(20);
+
+      let complete = false;
+      for (let attempt = 0; attempt < 180; attempt += 1) {
+        await new Promise((resolve) => setTimeout(resolve, 1000));
+        const job = await api.job(started.job_id);
+        setUploadProgress(job.progress ?? 20);
+        setUploadMsg(job.message || "Fetching and indexing URL...");
+
+        if (job.status === "succeeded") {
+          setUploadMsg(`URL ingested - ${job.result?.chunks ?? 0} chunks`);
+          setUploadProgress(100);
+          setUrlInput("");
+          complete = true;
+          break;
+        }
+        if (job.status === "failed") {
+          throw new Error(job.error || "URL ingestion failed");
+        }
+      }
+      if (!complete) throw new Error("URL ingestion is still processing. Check Documents in a moment.");
     } catch (error) {
       setUploadMsg(error instanceof Error ? error.message : "URL ingest failed");
       setUploadError(true);
     } finally {
       setUploading(false);
+      setTimeout(() => setUploadProgress(0), 1200);
     }
   };
 

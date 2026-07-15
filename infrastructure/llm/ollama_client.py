@@ -1,4 +1,5 @@
 import json
+import re
 import requests
 from typing import Optional, Iterator
 from core.config.settings import settings
@@ -155,28 +156,60 @@ class OllamaClient:
     ) -> str:
         if not settings.GEMINI_API_KEY:
             raise RuntimeError("GEMINI_API_KEY is not configured")
-        payload = {
-            "contents": [{"role": "user", "parts": [{"text": prompt}]}],
-            "generationConfig": {
-                "temperature": temperature,
-                "maxOutputTokens": max_tokens or settings.LLM_MAX_TOKENS,
-            },
-        }
-        if json_format:
-            payload["generationConfig"]["responseMimeType"] = "application/json"
         try:
-            r = requests.post(
-                f"{settings.GEMINI_BASE_URL}/models/{model}:generateContent",
-                params={"key": settings.GEMINI_API_KEY},
-                json=payload,
-                timeout=settings.OLLAMA_TIMEOUT_SECONDS,
-            )
-            r.raise_for_status()
-            data = r.json()
-            parts = data.get("candidates", [{}])[0].get("content", {}).get("parts", [])
-            return "".join(part.get("text", "") for part in parts).strip()
+            for attempt in range(2):
+                effective_prompt = prompt
+                if attempt:
+                    effective_prompt += (
+                        "\n\nReturn only the user-facing answer. Do not output internal "
+                        "safety labels, routing labels, or hidden reasoning."
+                    )
+                payload = {
+                    "contents": [{"role": "user", "parts": [{"text": effective_prompt}]}],
+                    "generationConfig": {
+                        "temperature": temperature,
+                        "maxOutputTokens": max_tokens or settings.LLM_MAX_TOKENS,
+                    },
+                }
+                if json_format:
+                    payload["generationConfig"]["responseMimeType"] = "application/json"
+
+                r = requests.post(
+                    f"{settings.GEMINI_BASE_URL}/models/{model}:generateContent",
+                    params={"key": settings.GEMINI_API_KEY},
+                    json=payload,
+                    timeout=settings.OLLAMA_TIMEOUT_SECONDS,
+                )
+                r.raise_for_status()
+                answer = self._gemini_answer_text(r.json())
+                if answer and not self._internal_label_only(answer):
+                    return answer
+
+            raise RuntimeError("Gemini returned no user-facing answer.")
         except requests.exceptions.RequestException as e:
             raise RuntimeError(self._safe_provider_error("Gemini", e)) from e
+
+    @staticmethod
+    def _gemini_answer_text(data: dict) -> str:
+        candidates = data.get("candidates") if isinstance(data, dict) else None
+        first = candidates[0] if isinstance(candidates, list) and candidates else {}
+        content = first.get("content") if isinstance(first, dict) else {}
+        parts = content.get("parts") if isinstance(content, dict) else []
+        if not isinstance(parts, list):
+            return ""
+        return "".join(
+            str(part.get("text") or "")
+            for part in parts
+            if isinstance(part, dict) and not part.get("thought")
+        ).strip()
+
+    @staticmethod
+    def _internal_label_only(answer: str) -> bool:
+        return bool(re.fullmatch(
+            r"(?:user\s+)?safety\s*:\s*(?:safe|unsafe|blocked|allowed)",
+            answer.strip(),
+            flags=re.IGNORECASE,
+        ))
 
     def _generate_openrouter(
         self,
