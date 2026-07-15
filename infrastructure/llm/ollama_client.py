@@ -176,7 +176,7 @@ class OllamaClient:
 
                 r = requests.post(
                     f"{settings.GEMINI_BASE_URL}/models/{model}:generateContent",
-                    params={"key": settings.GEMINI_API_KEY},
+                    headers={"x-goog-api-key": settings.GEMINI_API_KEY},
                     json=payload,
                     timeout=settings.OLLAMA_TIMEOUT_SECONDS,
                 )
@@ -250,7 +250,11 @@ class OllamaClient:
     def _can_fallback_to_openrouter(self, error: RuntimeError) -> bool:
         if not settings.OPENROUTER_API_KEY or not settings.OPENROUTER_MODELS:
             return False
-        return "429" in str(error) or "Too Many Requests" in str(error)
+        message = str(error)
+        return bool(
+            re.search(r"\((?:429 rate limit|5\d\d)\)", message)
+            or "Too Many Requests" in message
+        )
 
     @staticmethod
     def _safe_provider_error(provider: str, error: requests.exceptions.RequestException) -> str:
