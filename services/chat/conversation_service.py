@@ -7,23 +7,21 @@ from services.storage.sqlite_service import db
 
 
 class ConversationService:
-    def create(self, title: str = "New chat", conversation_id: str = None, user_id: str = "local") -> dict:
+    def create(self, title: str = "New chat", conversation_id: str = None, user_id: str = "local") -> dict | None:
         now = time.time()
         conversation_id = conversation_id or uuid.uuid4().hex
         db.execute(
             """
-            INSERT OR IGNORE INTO chat_conversations (id, user_id, title, created_at, updated_at)
+            INSERT INTO chat_conversations (id, user_id, title, created_at, updated_at)
             VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT (id) DO NOTHING
             """,
             (conversation_id, user_id, title, now, now),
         )
-        return self.get(conversation_id, user_id=user_id) or {
-            "id": conversation_id,
-            "title": title,
-            "messages": [],
-            "createdAt": now,
-            "updatedAt": now,
-        }
+        # Conversation IDs are globally unique. If a caller supplies an ID that
+        # belongs to another user, the conflict no-op must not be represented as a
+        # successful create for the caller.
+        return self.get(conversation_id, user_id=user_id)
 
     def list(self, user_id: str = "local") -> list[dict]:
         rows = db.query(
@@ -63,17 +61,27 @@ class ConversationService:
             "updatedAt": conversation["updated_at"],
         }
 
-    def save_messages(self, conversation_id: str, title: str, messages: list[dict], user_id: str = "local") -> dict:
+    def save_messages(self, conversation_id: str, title: str, messages: list[dict], user_id: str = "local") -> dict | None:
         existing = self.get(conversation_id, user_id=user_id)
         if not existing:
-            self.create(title=title, conversation_id=conversation_id, user_id=user_id)
+            existing = self.create(title=title, conversation_id=conversation_id, user_id=user_id)
+        if not existing:
+            return None
 
         now = time.time()
         statements = [
-            ("DELETE FROM chat_messages WHERE conversation_id = ?", (conversation_id,)),
             (
-                "UPDATE chat_conversations SET title = ?, updated_at = ? WHERE id = ?",
-                (title or "New chat", now, conversation_id),
+                """
+                DELETE FROM chat_messages
+                WHERE conversation_id IN (
+                  SELECT id FROM chat_conversations WHERE id = ? AND user_id = ?
+                )
+                """,
+                (conversation_id, user_id),
+            ),
+            (
+                "UPDATE chat_conversations SET title = ?, updated_at = ? WHERE id = ? AND user_id = ?",
+                (title or "New chat", now, conversation_id, user_id),
             ),
         ]
         for message in messages:
@@ -129,7 +137,15 @@ class ConversationService:
         if not existing:
             return
         db.execute_many([
-            ("DELETE FROM chat_messages WHERE conversation_id = ?", (conversation_id,)),
+            (
+                """
+                DELETE FROM chat_messages
+                WHERE conversation_id IN (
+                  SELECT id FROM chat_conversations WHERE id = ? AND user_id = ?
+                )
+                """,
+                (conversation_id, user_id),
+            ),
             ("DELETE FROM chat_conversations WHERE id = ? AND user_id = ?", (conversation_id, user_id)),
         ])
 

@@ -1,15 +1,20 @@
 .env
 .env.*
 !.env.example
+!.env.production.example
 
 __pycache__/
 *.py[cod]
 .pytest_cache/
+.coverage
+coverage.xml
+htmlcov/
 .mypy_cache/
 *.tsbuildinfo
 
 frontend/nextjs-app/node_modules/
 frontend/nextjs-app/.next/
+frontend/nextjs-app/coverage/
 
 data/raw/
 data/uploads/

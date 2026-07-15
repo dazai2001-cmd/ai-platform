@@ -9,9 +9,16 @@ class QAPipeline:
     def __init__(self, retriever):
         self.retriever = retriever
 
-    def ask(self, question: str, history: list[dict] = None, model: str = None, user_id: str = "local") -> dict:
+    def ask(
+        self,
+        question: str,
+        history: list[dict] = None,
+        model: str = None,
+        user_id: str = "local",
+        retrieval_results: list[dict] | None = None,
+    ) -> dict:
         model = model or settings.TASK_MODELS["rag"]
-        results = self.retriever.search(question, user_id=user_id)
+        results = retrieval_results if retrieval_results is not None else self.retriever.search(question, user_id=user_id)
         context = self.retriever.format_context(results)
 
         # Include last 4 messages of history if available

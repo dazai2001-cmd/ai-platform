@@ -4,7 +4,6 @@ import shutil
 import socket
 import subprocess
 import tempfile
-import threading
 from pathlib import Path
 from urllib.parse import urljoin, urlparse
 from bs4 import BeautifulSoup
@@ -18,7 +17,6 @@ from core.config.settings import settings
 
 
 _BLOCKED_HOSTS = {"localhost", "localhost.localdomain"}
-_INGEST_LOCK = threading.Lock()
 _REQUEST_HEADERS = {
     "User-Agent": "Mozilla/5.0 (compatible; AIPlatform/1.0; +http://localhost)"
 }
@@ -43,6 +41,8 @@ class IngestionService:
         return self._ingest_text(text, source=url, extra={"type": "url", **(extra or {})})
 
     def ingest_text(self, text: str, source: str = "note", extra: dict = None) -> int:
+        if len(text) > settings.MAX_TEXT_INGEST_CHARS:
+            raise ValueError("Text exceeds the ingestion limit")
         return self._ingest_text(text, source=source, extra={"type": "note", **(extra or {})})
 
     def ingest_folder(self, folder: str) -> dict:
@@ -58,23 +58,37 @@ class IngestionService:
         chunks = chunk_text(text)
         if not chunks:
             return 0
+        if len(chunks) > settings.MAX_CHUNKS_PER_DOCUMENT:
+            raise ValueError(
+                f"Document exceeds the {settings.MAX_CHUNKS_PER_DOCUMENT}-chunk limit"
+            )
 
-        vectors = self.embedder.embed_batch(chunks)
-        n = min(len(vectors), len(chunks))
-
-        metadata = [
-            {"text": chunks[i], "source": source, **(extra or {})}
-            for i in range(n)
-        ]
-
-        with _INGEST_LOCK:
-            self.store.add(vectors[:n], metadata)
-            self.store.save()
-        return n
+        user_id = (extra or {}).get("user_id", "local")
+        reservation = self.store.reserve_user_chunks(
+            user_id,
+            len(chunks),
+            settings.MAX_CHUNKS_PER_USER,
+        )
+        try:
+            vectors = self.embedder.embed_batch(chunks)
+            n = min(len(vectors), len(chunks))
+            metadata = [
+                {"text": chunks[i], "source": source, **(extra or {})}
+                for i in range(n)
+            ]
+            return reservation.commit(vectors[:n], metadata)
+        finally:
+            # commit() consumes the reservation; this also covers embedding and
+            # persistence failures without requiring every caller to clean up.
+            reservation.release()
 
     @staticmethod
     def _extract_pdf_text(path: str) -> str:
         with fitz.open(path) as doc:
+            if doc.is_encrypted:
+                raise ValueError("Encrypted PDFs are not supported")
+            if len(doc) > settings.MAX_PDF_PAGES:
+                raise ValueError(f"PDF exceeds the {settings.MAX_PDF_PAGES}-page limit")
             return "\n".join(page.get_text() for page in doc)
 
     @staticmethod

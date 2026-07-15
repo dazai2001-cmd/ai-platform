@@ -1,9 +1,12 @@
+import { isIP } from "node:net";
+
 const API_INTERNAL_URL = process.env.API_INTERNAL_URL || "http://api:5000";
+const API_AUTH_TOKEN = process.env.API_AUTH_TOKEN?.trim() || "";
 
 type Params = {
-  params: {
+  params: Promise<{
     path: string[];
-  };
+  }>;
 };
 
 function targetUrl(path: string[], request: Request) {
@@ -14,6 +17,14 @@ function targetUrl(path: string[], request: Request) {
 }
 
 function forwardedHeaders(request: Request) {
+  const forwardedChain = (request.headers.get("x-forwarded-for") || "")
+    .split(",")
+    .map((value) => value.trim())
+    .filter(Boolean);
+  // The documented edge proxy appends/overwrites the address it observed.
+  // Forward only that final, syntactically valid address so earlier
+  // browser-controlled XFF values cannot become a rate-limit identity.
+  const observedClient = forwardedChain.at(-1) || "";
   const headers = new Headers(request.headers);
   headers.delete("host");
   headers.delete("content-length");
@@ -26,16 +37,28 @@ function forwardedHeaders(request: Request) {
   headers.delete("trailer");
   headers.delete("transfer-encoding");
   headers.delete("upgrade");
+  for (const name of Array.from(headers.keys())) {
+    if (name === "forwarded" || name === "x-real-ip" || name.startsWith("x-forwarded-")) {
+      headers.delete(name);
+    }
+  }
+  if (isIP(observedClient)) headers.set("x-forwarded-for", observedClient);
+  // Never trust a browser-supplied infrastructure credential. The optional
+  // API boundary token exists only in the Next server environment.
+  headers.delete("x-api-token");
+  if (API_AUTH_TOKEN) headers.set("x-api-token", API_AUTH_TOKEN);
   return headers;
 }
 
 async function proxy(request: Request, { params }: Params) {
+  const { path } = await params;
   const method = request.method.toUpperCase();
   const hasBody = !["GET", "HEAD"].includes(method);
   const init: RequestInit & { duplex?: "half" } = {
     method,
     headers: forwardedHeaders(request),
     cache: "no-store",
+    signal: request.signal,
   };
 
   if (hasBody) {
@@ -43,7 +66,7 @@ async function proxy(request: Request, { params }: Params) {
     init.duplex = "half";
   }
 
-  const upstream = await fetch(targetUrl(params.path, request), init);
+  const upstream = await fetch(targetUrl(path, request), init);
   const headers = new Headers(upstream.headers);
   headers.delete("content-encoding");
   headers.delete("content-length");

@@ -1,10 +1,15 @@
 import json
 
 from flask import Blueprint, Response, jsonify, request, stream_with_context
+from werkzeug.exceptions import RequestEntityTooLarge
+from werkzeug.utils import secure_filename
 
 from apps.api.auth_context import current_user_id
+from apps.api.deps import ALLOWED_CV, UploadTooLargeError, remove_upload, save_upload
 from apps.api.errors import error_response
+from core.config.settings import settings
 from services.career import career_service
+from services.career.cv_document_service import cv_documents
 from services.career.job_search_service import career_jobs
 
 career_bp = Blueprint("career", __name__, url_prefix="/api/career")
@@ -91,6 +96,49 @@ def get_profile():
 def save_profile():
     data = request.json or {}
     return jsonify(career_jobs.save_profile(data.get("cv_text", ""), user_id=current_user_id()))
+
+
+@career_bp.post("/profile/import")
+def import_profile():
+    path = None
+    try:
+        upload = request.files.get("file")
+        original_filename = upload.filename if upload else ""
+        file_extension = f".{original_filename.rsplit('.', 1)[-1].lower()}" if "." in original_filename else ""
+        filename = secure_filename(original_filename) if original_filename else ""
+        if original_filename and (not filename or "." not in filename):
+            filename = f"cv{file_extension}"
+        path = save_upload(
+            upload,
+            ALLOWED_CV,
+            max_bytes=settings.MAX_CV_UPLOAD_BYTES,
+            limit_name="CV",
+        )
+        extracted = cv_documents.extract(path, original_filename)
+        profile = career_jobs.save_profile(extracted.text, user_id=current_user_id())
+        return jsonify({
+            **profile,
+            "filename": filename,
+            "file_type": extracted.file_type,
+            "characters": extracted.characters,
+            "pages": extracted.pages,
+            "used_ocr": extracted.used_ocr,
+        })
+    except RequestEntityTooLarge:
+        raise
+    except UploadTooLargeError as e:
+        return error_response(e, 413)
+    except ValueError as e:
+        return error_response(e, 400)
+    except Exception as e:
+        return error_response(e, 500)
+    finally:
+        remove_upload(path)
+
+
+@career_bp.delete("/profile")
+def delete_profile():
+    return jsonify(career_jobs.delete_profile(user_id=current_user_id()))
 
 
 @career_bp.get("/jobs")

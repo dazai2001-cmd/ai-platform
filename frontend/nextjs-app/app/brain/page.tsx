@@ -95,26 +95,26 @@ export default function BrainPage() {
   };
 
   return (
-    <div className="flex h-[calc(100vh-88px)] min-h-[620px] flex-col lg:h-screen lg:min-h-0 lg:flex-row">
-      <section className="border-b border-slate-800/70 bg-slate-950/58 p-4 backdrop-blur-xl lg:w-80 lg:shrink-0 lg:overflow-y-auto lg:border-b-0 lg:border-r lg:p-5">
+    <div className="flex min-h-[620px] flex-col lg:h-dvh lg:min-h-0 lg:flex-row">
+      <section className="border-b border-line-soft bg-panel p-4 lg:w-80 lg:shrink-0 lg:overflow-y-auto lg:border-b-0 lg:border-r lg:p-5">
         <div className="mb-5 flex items-center gap-3">
-          <div className="grid h-9 w-9 place-items-center rounded-md border border-cyan-300/20 bg-cyan-300/10 text-cyan-200">
+          <div className="grid h-9 w-9 place-items-center rounded-md border border-brand/20 bg-brand/10 text-brand-ink">
             <Brain size={18} />
           </div>
           <div>
-            <h1 className="text-sm font-semibold text-white">Knowledge Base</h1>
-            <p className="text-xs text-slate-500">PDFs, URLs, and notes</p>
+            <h1 className="text-sm font-semibold text-ink">Knowledge Base</h1>
+            <p className="text-xs text-muted">PDFs, URLs, and notes</p>
           </div>
         </div>
 
         <div className="grid gap-4 sm:grid-cols-3 lg:grid-cols-1">
           <div className="app-panel rounded-md p-3">
-            <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">PDF</div>
+            <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted">PDF</div>
             <input ref={fileRef} type="file" accept=".pdf" className="hidden" onChange={handlePdfUpload} />
             <button
               onClick={() => fileRef.current?.click()}
               disabled={uploading}
-              className="flex w-full items-center justify-center gap-2 rounded-md bg-slate-800 px-3 py-2 text-sm text-slate-200 transition duration-150 hover:-translate-y-0.5 hover:bg-slate-700 active:translate-y-0 disabled:opacity-50"
+              className="flex w-full items-center justify-center gap-2 rounded-md bg-soft px-3 py-2 text-sm text-ink transition duration-150 hover:bg-line-soft disabled:opacity-50"
             >
               <Upload size={15} />
               Upload PDF
@@ -122,9 +122,9 @@ export default function BrainPage() {
           </div>
 
           <div className="app-panel rounded-md p-3">
-            <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">URL</div>
+            <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted">URL</div>
             <input
-              className="app-input mb-2 w-full rounded-md px-3 py-2 text-sm placeholder:text-slate-600"
+              className="app-input mb-2 w-full rounded-md px-3 py-2 text-sm placeholder:text-muted-soft"
               placeholder="https://..."
               value={urlInput}
               onChange={(e) => setUrlInput(e.target.value)}
@@ -132,7 +132,7 @@ export default function BrainPage() {
             <button
               onClick={handleUrlIngest}
               disabled={uploading || !urlInput.trim()}
-              className="flex w-full items-center justify-center gap-2 rounded-md bg-slate-800 px-3 py-2 text-sm text-slate-200 transition duration-150 hover:-translate-y-0.5 hover:bg-slate-700 active:translate-y-0 disabled:opacity-50"
+              className="flex w-full items-center justify-center gap-2 rounded-md bg-soft px-3 py-2 text-sm text-ink transition duration-150 hover:bg-line-soft disabled:opacity-50"
             >
               <LinkIcon size={15} />
               Ingest URL
@@ -140,9 +140,9 @@ export default function BrainPage() {
           </div>
 
           <div className="app-panel rounded-md p-3">
-            <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">Note</div>
+            <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted">Note</div>
             <textarea
-              className="app-input mb-2 h-24 w-full resize-none rounded-md px-3 py-2 text-sm placeholder:text-slate-600"
+              className="app-input mb-2 h-24 w-full resize-none rounded-md px-3 py-2 text-sm placeholder:text-muted-soft"
               placeholder="Paste notes or ideas..."
               value={textInput}
               onChange={(e) => setTextInput(e.target.value)}
@@ -150,7 +150,7 @@ export default function BrainPage() {
             <button
               onClick={handleTextIngest}
               disabled={uploading || !textInput.trim()}
-              className="flex w-full items-center justify-center gap-2 rounded-md bg-slate-800 px-3 py-2 text-sm text-slate-200 transition duration-150 hover:-translate-y-0.5 hover:bg-slate-700 active:translate-y-0 disabled:opacity-50"
+              className="flex w-full items-center justify-center gap-2 rounded-md bg-soft px-3 py-2 text-sm text-ink transition duration-150 hover:bg-line-soft disabled:opacity-50"
             >
               <FileText size={15} />
               Save Note
@@ -161,14 +161,14 @@ export default function BrainPage() {
         {uploadMsg && (
           <div className={`mt-4 rounded-md border px-3 py-2 text-xs ${
             uploadError
-              ? "border-red-400/30 bg-red-400/10 text-red-200"
-              : "border-emerald-400/20 bg-emerald-400/10 text-emerald-200"
+              ? "border-danger/30 bg-danger/10 text-danger-ink"
+              : "border-success/20 bg-success/10 text-success-ink"
           }`}>
             {uploadMsg}
             {uploading && (
-              <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-slate-800">
+              <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-soft">
                 <div
-                  className="h-full rounded-full bg-cyan-300 transition-all"
+                  className="h-full rounded-full bg-brand transition-all"
                   style={{ width: `${Math.max(uploadProgress, 8)}%` }}
                 />
               </div>
@@ -178,9 +178,9 @@ export default function BrainPage() {
       </section>
 
       <section className="flex min-h-0 flex-1 flex-col">
-        <header className="border-b border-slate-800/70 bg-slate-950/30 px-5 py-4 backdrop-blur">
-          <h2 className="text-lg font-semibold text-white">2nd Brain</h2>
-          <p className="text-sm text-slate-500">Ask questions across your documents, notes, and URLs.</p>
+        <header className="border-b border-line-soft bg-panel px-5 py-4">
+          <h2 className="text-lg font-semibold text-ink">2nd Brain</h2>
+          <p className="text-sm text-muted">Ask questions across your documents, notes, and URLs.</p>
         </header>
         <div className="min-h-0 flex-1">
           <ChatWindow

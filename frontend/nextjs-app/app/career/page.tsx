@@ -1,7 +1,7 @@
 "use client";
 
 import type { ReactNode } from "react";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import {
   BookmarkPlus,
@@ -22,7 +22,8 @@ import {
   Trash2,
   XCircle,
 } from "lucide-react";
-import { api } from "@/lib/api";
+import CvProfileImport from "@/components/career/CvProfileImport";
+import { api, type CareerProfileImportResult } from "@/lib/api";
 
 type CareerJob = {
   id: string;
@@ -110,7 +111,18 @@ export default function CareerPage() {
   const [matchSort, setMatchSort] = useState<MatchSort>("score");
   const [workModeFilter, setWorkModeFilter] = useState<WorkModeFilter>("all");
   const [expandedJobIds, setExpandedJobIds] = useState<string[]>([]);
-  const loading = Boolean(loadingAction || jobAction);
+  const [cvImporting, setCvImporting] = useState(false);
+  const lastSyncedCvRef = useRef<string | null>(null);
+  const profileWriteQueueRef = useRef<Promise<void>>(Promise.resolve());
+  const profileWriteGenerationRef = useRef(0);
+  const loading = Boolean(loadingAction || jobAction || cvImporting);
+
+  useEffect(() => {
+    const tab = new URLSearchParams(window.location.search).get("tab") as CareerTab | null;
+    if (tab && careerTabs.some((item) => item.id === tab)) {
+      setActiveTab(tab);
+    }
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -125,7 +137,10 @@ export default function CareerPage() {
         const localPrefs = readLocalCareerPreferences();
         if (!cancelled) setCareerModel(settings.task_models?.career || "");
         if (!cancelled) setPreferences({ ...defaultPreferences, ...(prefs || {}), ...localPrefs });
-        if (!cancelled) setCvText(profile?.cv_text || readLocalCareerProfile());
+        if (!cancelled) {
+          lastSyncedCvRef.current = profile?.cv_text || "";
+          setCvText(profile?.cv_text || readLocalCareerProfile());
+        }
         if (!cancelled) setJobs(savedJobs || []);
         if (!cancelled) setScoreBatch(currentBatch || null);
         if (!cancelled) setPreferencesReady(true);
@@ -134,6 +149,7 @@ export default function CareerPage() {
       .catch(() => {
         if (!cancelled) setCareerModel("");
         if (!cancelled) {
+          lastSyncedCvRef.current = null;
           setPreferences({ ...defaultPreferences, ...readLocalCareerPreferences() });
           setCvText(readLocalCareerProfile());
           setPreferencesReady(true);
@@ -152,12 +168,42 @@ export default function CareerPage() {
 
   useEffect(() => {
     if (!profileReady) return;
-    window.localStorage.setItem("career-profile", cvText);
+    const cleanProfile = cvText.trim();
+    if (cleanProfile) {
+      window.localStorage.setItem("career-profile", cvText);
+    } else {
+      window.localStorage.removeItem("career-profile");
+    }
+    const profileValue = cleanProfile ? cvText : "";
+    if (lastSyncedCvRef.current === profileValue) return;
+    const generation = ++profileWriteGenerationRef.current;
     const timeout = window.setTimeout(() => {
-      api.updateCareerProfile(cvText).catch(() => undefined);
+      const write = async () => {
+        if (generation !== profileWriteGenerationRef.current) return;
+        try {
+          const profile = cleanProfile
+            ? await api.updateCareerProfile(cvText)
+            : await api.deleteCareerProfile();
+          if (generation === profileWriteGenerationRef.current) {
+            lastSyncedCvRef.current = profile?.cv_text ?? profileValue;
+          }
+        } catch {
+          // Preserve the local draft. A later edit/import can retry safely.
+        }
+      };
+      profileWriteQueueRef.current = profileWriteQueueRef.current
+        .catch(() => undefined)
+        .then(write);
     }, 800);
     return () => window.clearTimeout(timeout);
   }, [cvText, profileReady]);
+
+  const settlePendingProfileWrites = async () => {
+    // Invalidate debounced writes that have not started, then wait for any
+    // request already in flight so an import/delete is guaranteed to run last.
+    profileWriteGenerationRef.current += 1;
+    await profileWriteQueueRef.current.catch(() => undefined);
+  };
 
   useEffect(() => {
     if (!scoreBatch || !["queued", "running"].includes(scoreBatch.status)) return;
@@ -210,17 +256,6 @@ export default function CareerPage() {
       await readCareerSearchStream(response);
       const refreshedJobs = await api.careerJobs();
       setJobs(refreshedJobs);
-
-      if (preferences.match_mode !== "criteria" && cvText.trim()) {
-        const unscoredIds = refreshedJobs
-          .filter((job: CareerJob) => isSearchJob(job) && typeof job.fit_score !== "number" && job.status !== "skipped")
-          .map((job: CareerJob) => job.id);
-        if (unscoredIds.length) {
-          const batch = await api.startCareerScoreBatch(cvText, unscoredIds);
-          setScoreBatch(batch);
-          setNotice(`Search complete. ${batch.total} unique Found jobs queued for background scoring.`);
-        }
-      }
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to search jobs");
     } finally {
@@ -396,6 +431,54 @@ export default function CareerPage() {
     }
   };
 
+  const clearFoundJobs = async () => {
+    const foundIds = jobs.filter((job) => jobBelongsToTab(job, "found")).map((job) => job.id);
+    if (!foundIds.length) return;
+    const label = foundIds.length === 1 ? "1 Found job" : `${foundIds.length} Found jobs`;
+    if (!window.confirm(`Clear ${label}? Matches, saved, applied, and skipped jobs will stay untouched.`)) return;
+
+    setJobAction("clear-found");
+    setError("");
+    setNotice("");
+    try {
+      await Promise.all(foundIds.map((jobId) => api.deleteCareerJob(jobId)));
+      setJobs((current) => current.filter((job) => !foundIds.includes(job.id)));
+      setActiveTab("found");
+      setNotice(`Cleared ${label}.`);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to clear Found jobs");
+    } finally {
+      setJobAction("");
+    }
+  };
+
+  const deleteCareerProfile = async () => {
+    if (!cvText.trim()) return;
+    if (!window.confirm("Delete your saved CV/profile? Your jobs and search criteria will stay untouched.")) return;
+
+    setJobAction("delete-profile");
+    setError("");
+    setNotice("");
+    try {
+      await settlePendingProfileWrites();
+      await api.deleteCareerProfile();
+      lastSyncedCvRef.current = "";
+      window.localStorage.removeItem("career-profile");
+      setCvText("");
+      setNotice("Saved CV/profile deleted.");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to delete saved profile");
+    } finally {
+      setJobAction("");
+    }
+  };
+
+  const importCareerProfile = (profile: CareerProfileImportResult) => {
+    lastSyncedCvRef.current = profile.cv_text;
+    setCvText(profile.cv_text);
+    setError("");
+  };
+
   const stopScoreAll = () => {
     if (!scoreBatch || !["queued", "running"].includes(scoreBatch.status)) return;
     setJobAction("cancel-score-all");
@@ -535,6 +618,7 @@ export default function CareerPage() {
   const tailoredCv = getTailoredCv(result);
   const coverLetter = getCoverLetter(result);
   const resultWarning = getResultWarning(result);
+  const foundJobs = jobs.filter((job) => jobBelongsToTab(job, "found"));
   const tabCounts = Object.fromEntries(
     careerTabs.map((tab) => [tab.id, jobs.filter((job) => jobBelongsToTab(job, tab.id)).length]),
   ) as Record<CareerTab, number>;
@@ -544,60 +628,58 @@ export default function CareerPage() {
         .filter((job) => workModeFilter === "all" || jobWorkMode(job) === workModeFilter)
         .sort((left, right) => compareMatchJobs(left, right, matchSort))
     : visibleJobs;
-  const unscoredFoundJobs = jobs.filter(
-    (job) => jobBelongsToTab(job, "found") && typeof job.fit_score !== "number",
-  );
+  const unscoredFoundJobs = foundJobs.filter((job) => typeof job.fit_score !== "number");
   const scoreBatchActive = Boolean(scoreBatch && ["queued", "running"].includes(scoreBatch.status));
   const scoreBatchPercent = scoreBatch?.progress ?? 0;
 
   return (
-    <div className="min-h-screen text-slate-100">
-      <section className="border-b border-slate-800/70 bg-slate-950/30 px-5 py-5 backdrop-blur">
+    <div className="min-h-screen text-ink">
+      <section className="border-b border-line-soft bg-panel px-5 py-5">
         <div className="flex items-center gap-3">
-          <div className="grid h-10 w-10 place-items-center rounded-md border border-cyan-300/20 bg-cyan-300/10 text-cyan-200">
+          <div className="grid h-10 w-10 place-items-center rounded-md border border-brand/20 bg-brand/10 text-brand-ink">
             <BriefcaseBusiness size={20} />
           </div>
           <div>
-            <h1 className="text-lg font-semibold text-white">Career Agent</h1>
-            <p className="text-sm text-slate-500">Job search, CV matching, and application drafts using the selected model</p>
+            <h1 className="text-lg font-semibold text-ink">Career Agent</h1>
+            <p className="text-sm text-muted">Job search, CV matching, and application drafts using the selected model</p>
           </div>
         </div>
       </section>
 
       <main className="grid gap-0 lg:grid-cols-[420px_1fr]">
-        <section className="border-b border-slate-800/70 bg-slate-950/42 p-5 backdrop-blur-xl lg:min-h-[calc(100vh-82px)] lg:border-b-0 lg:border-r">
+        <section className="border-b border-line-soft bg-panel p-5 lg:min-h-[calc(100vh-82px)] lg:border-b-0 lg:border-r">
           <div className="app-panel mb-4 rounded-md p-3">
             <div className="mb-1 flex items-center justify-between gap-3">
-              <span className="text-xs font-semibold uppercase tracking-wide text-slate-500">Agent Model</span>
+              <span className="text-xs font-semibold uppercase tracking-wide text-muted">Agent Model</span>
               <Link
                 href="/settings"
-                className="inline-flex items-center gap-1.5 rounded px-1.5 py-1 text-xs text-slate-500 transition hover:bg-slate-800 hover:text-cyan-200"
+                className="inline-flex items-center gap-1.5 rounded px-1.5 py-1 text-xs text-muted transition hover:bg-soft hover:text-analytic-hover"
               >
                 <Settings size={13} />
                 Settings
               </Link>
             </div>
-            <div className="truncate text-sm font-medium text-slate-100">{careerModel || "Loading..."}</div>
+            <div className="truncate text-sm font-medium text-ink">{careerModel || "Loading..."}</div>
           </div>
 
           <div className="app-panel mb-4 rounded-md p-3">
             <div className="mb-3 flex items-center justify-between gap-3">
               <div>
-                <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">Job Search Criteria</div>
-                <div className="text-xs text-slate-600">Used to find and rank roles later.</div>
+                <div className="text-xs font-semibold uppercase tracking-wide text-muted">Job Search Criteria</div>
+                <div className="text-xs text-muted-soft">Used to find and rank roles later.</div>
               </div>
               <div className="flex gap-2">
                 <button
                   onClick={savePreferences}
                   disabled={loading}
-                  className="rounded-md border border-slate-700 px-2.5 py-1.5 text-xs text-slate-300 transition hover:border-cyan-400 hover:text-cyan-200 disabled:opacity-50"
+                  className="rounded-md border border-line px-2.5 py-1.5 text-xs text-ink-subtle transition hover:border-brand hover:text-analytic-hover disabled:opacity-50"
                 >
                   {jobAction === "preferences" ? "Saving..." : "Save"}
                 </button>
                 <button
                   onClick={searchJobs}
                   disabled={loading}
-                  className="inline-flex items-center gap-1.5 rounded-md bg-cyan-300 px-2.5 py-1.5 text-xs font-medium text-slate-950 transition hover:bg-cyan-200 disabled:opacity-50"
+                  className="inline-flex items-center gap-1.5 rounded-md bg-brand px-2.5 py-1.5 text-xs font-medium text-white transition hover:bg-brand-hover disabled:opacity-50"
                 >
                   {jobAction === "search" ? <Loader2 size={13} className="animate-spin" /> : <Search size={13} />}
                   Search
@@ -606,13 +688,13 @@ export default function CareerPage() {
             </div>
             <div className="grid gap-2">
               <input
-                className="app-input rounded-md px-3 py-2 text-sm placeholder:text-slate-600"
+                className="app-input rounded-md px-3 py-2 text-sm placeholder:text-muted-soft"
                 placeholder="Roles: AI Engineer, ML Intern..."
                 value={preferences.roles}
                 onChange={(e) => setPreferences((current) => ({ ...current, roles: e.target.value }))}
               />
               <input
-                className="app-input rounded-md px-3 py-2 text-sm placeholder:text-slate-600"
+                className="app-input rounded-md px-3 py-2 text-sm placeholder:text-muted-soft"
                 placeholder="Locations: remote, London..."
                 value={preferences.locations}
                 onChange={(e) => setPreferences((current) => ({ ...current, locations: e.target.value }))}
@@ -637,13 +719,13 @@ export default function CareerPage() {
                 <option value="criteria">Criteria only</option>
               </select>
               <input
-                className="app-input rounded-md px-3 py-2 text-sm placeholder:text-slate-600"
+                className="app-input rounded-md px-3 py-2 text-sm placeholder:text-muted-soft"
                 placeholder="Must-have skills"
                 value={preferences.must_have}
                 onChange={(e) => setPreferences((current) => ({ ...current, must_have: e.target.value }))}
               />
               <input
-                className="app-input rounded-md px-3 py-2 text-sm placeholder:text-slate-600"
+                className="app-input rounded-md px-3 py-2 text-sm placeholder:text-muted-soft"
                 placeholder="Avoid: unpaid, senior..."
                 value={preferences.avoid}
                 onChange={(e) => setPreferences((current) => ({ ...current, avoid: e.target.value }))}
@@ -652,9 +734,9 @@ export default function CareerPage() {
           </div>
 
           <div className="app-panel mb-4 rounded-md p-3">
-            <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">Import Job URL</div>
+            <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted">Import Job URL</div>
             <input
-              className="app-input mb-2 w-full rounded-md px-3 py-2 text-sm placeholder:text-slate-600"
+              className="app-input mb-2 w-full rounded-md px-3 py-2 text-sm placeholder:text-muted-soft"
               placeholder="https://jobs.lever.co/..."
               value={jobUrl}
               onChange={(e) => setJobUrl(e.target.value)}
@@ -662,23 +744,42 @@ export default function CareerPage() {
             <button
               onClick={importJobUrl}
               disabled={loading || !jobUrl.trim()}
-              className="flex w-full items-center justify-center gap-2 rounded-md border border-slate-700 bg-slate-900/82 px-3 py-2 text-sm font-medium text-slate-100 transition hover:border-cyan-400 hover:text-cyan-200 disabled:opacity-50"
+              className="flex w-full items-center justify-center gap-2 rounded-md border border-line bg-panel/82 px-3 py-2 text-sm font-medium text-ink transition hover:border-brand hover:text-analytic-hover disabled:opacity-50"
             >
               {jobAction === "import-url" ? <Loader2 size={15} className="animate-spin" /> : <LinkIcon size={15} />}
               Import & Score
             </button>
           </div>
 
-          <label className="mb-2 flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-slate-500">
-            <FileText size={14} /> CV / Profile
-          </label>
+          <div className="mb-2 flex items-center justify-between gap-3">
+            <label className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-muted">
+              <FileText size={14} /> CV / Profile
+            </label>
+            <button
+              onClick={deleteCareerProfile}
+              disabled={loading || !cvText.trim()}
+              className="inline-flex items-center gap-1.5 rounded-md border border-danger/25 bg-danger/10 px-2.5 py-1 text-xs font-medium text-danger-ink transition hover:border-danger hover:bg-danger-hover/15 disabled:opacity-50"
+            >
+              {jobAction === "delete-profile" ? <Loader2 size={12} className="animate-spin" /> : <Trash2 size={12} />}
+              Delete Profile
+            </button>
+          </div>
+          <CvProfileImport
+            disabled={Boolean(loadingAction || jobAction)}
+            hasProfile={Boolean(cvText.trim())}
+            beforeImport={settlePendingProfileWrites}
+            onBusyChange={setCvImporting}
+            onImported={importCareerProfile}
+          />
           <textarea
             value={cvText}
             onChange={(e) => setCvText(e.target.value)}
+            aria-label="CV or profile text"
+            placeholder="Upload a PDF or Word file above, or paste your CV/profile text here."
             className="app-input h-56 w-full resize-none rounded-md px-3 py-2 text-sm"
           />
 
-          <label className="mb-2 mt-4 block text-xs font-semibold uppercase tracking-wide text-slate-500">
+          <label className="mb-2 mt-4 block text-xs font-semibold uppercase tracking-wide text-muted">
             Job Description
           </label>
           <textarea
@@ -691,7 +792,7 @@ export default function CareerPage() {
             <button
               onClick={scoreFit}
               disabled={loading || !cvText.trim() || !jobDescription.trim()}
-              className="flex items-center justify-center gap-2 rounded-md border border-slate-700 bg-slate-900/82 px-3 py-2 text-sm font-medium text-slate-100 transition duration-150 hover:-translate-y-0.5 hover:border-cyan-400 hover:text-cyan-200 active:translate-y-0 disabled:cursor-not-allowed disabled:opacity-50"
+              className="flex items-center justify-center gap-2 rounded-md border border-line bg-panel/82 px-3 py-2 text-sm font-medium text-ink transition duration-150 hover:border-brand hover:text-analytic-hover disabled:cursor-not-allowed disabled:opacity-50"
             >
               {loadingAction === "analysis" ? <Loader2 className="animate-spin" size={16} /> : <Gauge size={16} />}
               Score Fit
@@ -699,7 +800,7 @@ export default function CareerPage() {
             <button
               onClick={saveCurrentJob}
               disabled={loading || !jobDescription.trim()}
-              className="flex items-center justify-center gap-2 rounded-md border border-slate-700 bg-slate-900/82 px-3 py-2 text-sm font-medium text-slate-100 transition duration-150 hover:-translate-y-0.5 hover:border-cyan-400 hover:text-cyan-200 active:translate-y-0 disabled:cursor-not-allowed disabled:opacity-50"
+              className="flex items-center justify-center gap-2 rounded-md border border-line bg-panel/82 px-3 py-2 text-sm font-medium text-ink transition duration-150 hover:border-brand hover:text-analytic-hover disabled:cursor-not-allowed disabled:opacity-50"
             >
               {jobAction === "save-job" ? <Loader2 className="animate-spin" size={16} /> : <BookmarkPlus size={16} />}
               Save Job
@@ -707,11 +808,11 @@ export default function CareerPage() {
           </div>
 
           {notice && (
-            <div className="mt-4 rounded-md border border-cyan-300/25 bg-cyan-300/10 p-3 text-sm text-cyan-100">
+            <div className="mt-4 rounded-md border border-brand/25 bg-brand/10 p-3 text-sm text-brand-ink">
               {notice}
             </div>
           )}
-          {error && <div className="mt-4 rounded-md border border-red-400/30 bg-red-400/10 p-3 text-sm text-red-200">{error}</div>}
+          {error && <div className="mt-4 rounded-md border border-danger/30 bg-danger/10 p-3 text-sm text-danger-ink">{error}</div>}
         </section>
 
         <section className="space-y-5 p-5">
@@ -724,34 +825,44 @@ export default function CareerPage() {
                     onClick={() => setActiveTab(tab.id)}
                     className={`rounded-md border px-3 py-1.5 text-xs font-medium transition ${
                       activeTab === tab.id
-                        ? "border-cyan-300/50 bg-cyan-300/10 text-cyan-100"
-                        : "border-slate-800 bg-slate-950/40 text-slate-500 hover:border-slate-600 hover:text-slate-200"
+                        ? "border-brand/50 bg-brand/10 text-brand-ink"
+                        : "border-line-soft bg-canvas/40 text-muted hover:border-line-strong hover:text-ink"
                     }`}
                   >
                     {tab.label} {tabCounts[tab.id] ? `(${tabCounts[tab.id]})` : ""}
                   </button>
                 ))}
               </div>
-              <button
-                onClick={scoreBatchActive ? stopScoreAll : scoreAllFoundJobs}
-                disabled={
-                  scoreBatchActive
-                    ? jobAction === "cancel-score-all"
-                    : loading || !cvText.trim() || unscoredFoundJobs.length === 0
-                }
-                className="inline-flex items-center justify-center gap-1.5 rounded-md border border-slate-700 bg-slate-950/50 px-3 py-1.5 text-xs font-medium text-slate-300 transition hover:border-cyan-400 hover:text-cyan-200 disabled:opacity-50"
-              >
-                {scoreBatchActive ? <Square size={12} /> : <Gauge size={13} />}
-                {scoreBatchActive
-                  ? jobAction === "cancel-score-all" ? "Stopping..." : "Stop after current"
-                  : `Score all Found${unscoredFoundJobs.length ? ` (${unscoredFoundJobs.length})` : ""}`}
-              </button>
+              <div className="flex flex-wrap gap-2">
+                <button
+                  onClick={scoreBatchActive ? stopScoreAll : scoreAllFoundJobs}
+                  disabled={
+                    scoreBatchActive
+                      ? jobAction === "cancel-score-all"
+                      : loading || !cvText.trim() || unscoredFoundJobs.length === 0
+                  }
+                  className="inline-flex items-center justify-center gap-1.5 rounded-md border border-line bg-canvas/50 px-3 py-1.5 text-xs font-medium text-ink-subtle transition hover:border-brand hover:text-analytic-hover disabled:opacity-50"
+                >
+                  {scoreBatchActive ? <Square size={12} /> : <Gauge size={13} />}
+                  {scoreBatchActive
+                    ? jobAction === "cancel-score-all" ? "Stopping..." : "Stop after current"
+                    : `Score all Found${unscoredFoundJobs.length ? ` (${unscoredFoundJobs.length})` : ""}`}
+                </button>
+                <button
+                  onClick={clearFoundJobs}
+                  disabled={loading || scoreBatchActive || foundJobs.length === 0}
+                  className="inline-flex items-center justify-center gap-1.5 rounded-md border border-danger/30 bg-danger/10 px-3 py-1.5 text-xs font-medium text-danger-ink transition hover:border-danger hover:bg-danger-hover/15 disabled:opacity-50"
+                >
+                  {jobAction === "clear-found" ? <Loader2 className="animate-spin" size={13} /> : <Trash2 size={13} />}
+                  Clear Found{foundJobs.length ? ` (${foundJobs.length})` : ""}
+                </button>
+              </div>
             </div>
 
             {scoreBatch && (
-              <div className="mb-4 rounded-md border border-cyan-300/25 bg-cyan-300/10 p-3" aria-live="polite">
+              <div className="mb-4 rounded-md border border-brand/25 bg-brand/10 p-3" aria-live="polite">
                 <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
-                  <span className="font-medium text-cyan-100">
+                  <span className="font-medium text-brand-ink">
                     {scoreBatch.status === "completed"
                       ? "Background scoring complete"
                       : scoreBatch.status === "cancelled"
@@ -760,25 +871,25 @@ export default function CareerPage() {
                           ? "Background scoring queued"
                           : `Scoring ${Math.min(scoreBatch.processed + 1, scoreBatch.total)} of ${scoreBatch.total}`}
                   </span>
-                  <span className="text-slate-400">
+                  <span className="text-muted">
                     {scoreBatch.processed}/{scoreBatch.total} processed / {scoreBatch.completed} scored
                     {scoreBatch.failed ? ` / ${scoreBatch.failed} failed` : ""}
                   </span>
                 </div>
-                <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-slate-900">
+                <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-panel">
                   <div
-                    className="h-full rounded-full bg-cyan-300 transition-[width] duration-300"
+                    className="h-full rounded-full bg-brand transition-[width] duration-300"
                     style={{ width: `${scoreBatchPercent}%` }}
                   />
                 </div>
                 {scoreBatch.current_job?.title && (
-                  <div className="mt-2 truncate text-xs text-slate-300">Currently scoring: {scoreBatch.current_job.title}</div>
+                  <div className="mt-2 truncate text-xs text-ink-subtle">Currently scoring: {scoreBatch.current_job.title}</div>
                 )}
               </div>
             )}
 
             {activeTab === "matches" && (
-              <div className="mb-4 flex flex-col gap-3 border-b border-slate-800/80 pb-4 xl:flex-row xl:items-center xl:justify-between">
+              <div className="mb-4 flex flex-col gap-3 border-b border-line-soft/80 pb-4 xl:flex-row xl:items-center xl:justify-between">
                 <div className="flex flex-wrap gap-1" aria-label="Work mode filter">
                   {workModeFilters.map((mode) => (
                     <button
@@ -787,8 +898,8 @@ export default function CareerPage() {
                       aria-pressed={workModeFilter === mode.id}
                       className={`rounded-md border px-2.5 py-1.5 text-xs font-medium transition ${
                         workModeFilter === mode.id
-                          ? "border-cyan-300/50 bg-cyan-300/10 text-cyan-100"
-                          : "border-slate-800 text-slate-500 hover:border-slate-600 hover:text-slate-200"
+                          ? "border-brand/50 bg-brand/10 text-brand-ink"
+                          : "border-line-soft text-muted hover:border-line-strong hover:text-ink"
                       }`}
                     >
                       {mode.label}
@@ -809,45 +920,45 @@ export default function CareerPage() {
             )}
 
             {jobs.length === 0 ? (
-              <div className="rounded-md border border-dashed border-slate-800 px-4 py-8 text-center text-sm text-slate-500">
+              <div className="rounded-md border border-dashed border-line-soft px-4 py-8 text-center text-sm text-muted">
                 Import a job URL or save the pasted job description to build a match list.
               </div>
             ) : displayedJobs.length === 0 ? (
-              <div className="rounded-md border border-dashed border-slate-800 px-4 py-8 text-center text-sm text-slate-500">
+              <div className="rounded-md border border-dashed border-line-soft px-4 py-8 text-center text-sm text-muted">
                 No jobs match this {careerTabs.find((tab) => tab.id === activeTab)?.label.toLowerCase()} view.
               </div>
             ) : (
               <div className="space-y-3">
                 {displayedJobs.map((job) => (
-                  <div key={job.id} className="rounded-md border border-slate-800/80 bg-slate-950/58 p-3">
+                  <div key={job.id} className="rounded-md border border-line-soft bg-panel p-3">
                     <div className="mb-3 flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
                       <div className="min-w-0">
-                        <div className="truncate text-sm font-semibold text-white">{job.title}</div>
-                        <div className="mt-1 text-xs text-slate-500">
+                        <div className="truncate text-sm font-semibold text-ink">{job.title}</div>
+                        <div className="mt-1 text-xs text-muted">
                           {[job.company, job.location, job.source].filter(Boolean).join(" / ") || "Saved job"}
                         </div>
                       </div>
                       <div className="flex shrink-0 items-center gap-2">
                         {job.fit_score !== null && job.fit_score !== undefined ? (
-                          <span className="rounded-md border border-cyan-300/25 bg-cyan-300/10 px-2 py-1 text-xs font-semibold text-cyan-200">
+                          <span className="rounded-md border border-brand/25 bg-brand/10 px-2 py-1 text-xs font-semibold text-brand-ink">
                             {job.fit_score}/100
                           </span>
                         ) : (
-                          <span className="rounded-md border border-slate-700 px-2 py-1 text-xs text-slate-500">
+                          <span className="rounded-md border border-line px-2 py-1 text-xs text-muted">
                             Unscored
                           </span>
                         )}
                         {activeTab === "matches" && jobWorkMode(job) !== "unknown" && (
-                          <span className="rounded-md border border-slate-700 px-2 py-1 text-xs text-slate-400">
+                          <span className="rounded-md border border-line px-2 py-1 text-xs text-muted">
                             {workModeLabel(jobWorkMode(job))}
                           </span>
                         )}
                         {job.decision && (
-                          <span className="rounded-md border border-slate-700 px-2 py-1 text-xs text-slate-400">
+                          <span className="rounded-md border border-line px-2 py-1 text-xs text-muted">
                             {job.decision}
                           </span>
                         )}
-                        <span className="rounded-md border border-slate-700 px-2 py-1 text-xs text-slate-500">
+                        <span className="rounded-md border border-line px-2 py-1 text-xs text-muted">
                           {statusLabel(job.status)}
                         </span>
                       </div>
@@ -856,8 +967,8 @@ export default function CareerPage() {
                     {expandedJobIds.includes(job.id) && <JobMatchDetails analysis={job.analysis} />}
 
                     {job.status === "opened" && (
-                      <div className="mb-3 rounded-md border border-cyan-300/20 bg-cyan-300/10 p-3 text-sm text-slate-300">
-                        <div className="mb-2 font-medium text-cyan-100">Did you apply?</div>
+                      <div className="mb-3 rounded-md border border-brand/20 bg-brand/10 p-3 text-sm text-ink-subtle">
+                        <div className="mb-2 font-medium text-brand-ink">Did you apply?</div>
                         <div className="flex flex-wrap gap-2">
                           <StatusButton
                             icon={<CheckCircle2 size={13} />}
@@ -884,7 +995,7 @@ export default function CareerPage() {
                     <div className="flex flex-wrap gap-2">
                       <button
                         onClick={() => setJobDescription(job.description)}
-                        className="rounded-md border border-slate-700 px-2.5 py-1.5 text-xs text-slate-300 transition hover:border-cyan-400 hover:text-cyan-200"
+                        className="rounded-md border border-line px-2.5 py-1.5 text-xs text-ink-subtle transition hover:border-brand hover:text-analytic-hover"
                       >
                         Use
                       </button>
@@ -892,7 +1003,7 @@ export default function CareerPage() {
                         <button
                           onClick={() => toggleJobDetails(job.id)}
                           aria-expanded={expandedJobIds.includes(job.id)}
-                          className="inline-flex items-center gap-1.5 rounded-md border border-slate-700 px-2.5 py-1.5 text-xs text-slate-300 transition hover:border-cyan-400 hover:text-cyan-200"
+                          className="inline-flex items-center gap-1.5 rounded-md border border-line px-2.5 py-1.5 text-xs text-ink-subtle transition hover:border-brand hover:text-analytic-hover"
                         >
                           <ChevronDown
                             size={13}
@@ -905,7 +1016,7 @@ export default function CareerPage() {
                         <button
                           onClick={() => generateForJob(job)}
                           disabled={loading || !cvText.trim()}
-                          className="inline-flex items-center gap-1.5 rounded-md border border-cyan-300/30 bg-cyan-300/10 px-2.5 py-1.5 text-xs font-medium text-cyan-100 transition hover:border-cyan-300 hover:bg-cyan-300/15 disabled:opacity-50"
+                          className="inline-flex items-center gap-1.5 rounded-md border border-brand/30 bg-brand/10 px-2.5 py-1.5 text-xs font-medium text-brand-ink transition hover:border-brand hover:bg-brand-hover/15 disabled:opacity-50"
                         >
                           {jobAction === `pack:${job.id}` ? <Loader2 size={13} className="animate-spin" /> : <Sparkles size={13} />}
                           Generate Pack
@@ -914,7 +1025,7 @@ export default function CareerPage() {
                       <button
                         onClick={() => scoreSavedJob(job)}
                         disabled={loading || !cvText.trim()}
-                        className="inline-flex items-center gap-1.5 rounded-md border border-slate-700 px-2.5 py-1.5 text-xs text-slate-300 transition hover:border-cyan-400 hover:text-cyan-200 disabled:opacity-50"
+                        className="inline-flex items-center gap-1.5 rounded-md border border-line px-2.5 py-1.5 text-xs text-ink-subtle transition hover:border-brand hover:text-analytic-hover disabled:opacity-50"
                       >
                         {jobAction === job.id ? <Loader2 size={13} className="animate-spin" /> : <Gauge size={13} />}
                         Score
@@ -923,7 +1034,7 @@ export default function CareerPage() {
                         <button
                           onClick={() => openApplyLink(job)}
                           disabled={loading}
-                          className="inline-flex items-center gap-1.5 rounded-md border border-slate-700 px-2.5 py-1.5 text-xs text-slate-300 transition hover:border-cyan-400 hover:text-cyan-200"
+                          className="inline-flex items-center gap-1.5 rounded-md border border-line px-2.5 py-1.5 text-xs text-ink-subtle transition hover:border-brand hover:text-analytic-hover"
                         >
                           <ExternalLink size={13} />
                           Apply
@@ -932,7 +1043,7 @@ export default function CareerPage() {
                       <button
                         onClick={() => updateJobStatus(job.id, "applied")}
                         disabled={loading}
-                        className="inline-flex items-center gap-1.5 rounded-md border border-slate-700 px-2.5 py-1.5 text-xs text-slate-300 transition hover:border-emerald-400 hover:text-emerald-200 disabled:opacity-50"
+                        className="inline-flex items-center gap-1.5 rounded-md border border-line px-2.5 py-1.5 text-xs text-ink-subtle transition hover:border-success hover:text-success-ink disabled:opacity-50"
                       >
                         <CheckCircle2 size={13} />
                         Applied
@@ -940,7 +1051,7 @@ export default function CareerPage() {
                       <button
                         onClick={() => updateJobStatus(job.id, "saved")}
                         disabled={loading}
-                        className="inline-flex items-center gap-1.5 rounded-md border border-slate-700 px-2.5 py-1.5 text-xs text-slate-300 transition hover:border-cyan-400 hover:text-cyan-200 disabled:opacity-50"
+                        className="inline-flex items-center gap-1.5 rounded-md border border-line px-2.5 py-1.5 text-xs text-ink-subtle transition hover:border-brand hover:text-analytic-hover disabled:opacity-50"
                       >
                         <FolderOpen size={13} />
                         Save
@@ -948,7 +1059,7 @@ export default function CareerPage() {
                       <button
                         onClick={() => updateJobStatus(job.id, "skipped")}
                         disabled={loading}
-                        className="inline-flex items-center gap-1.5 rounded-md border border-slate-700 px-2.5 py-1.5 text-xs text-slate-500 transition hover:border-amber-400 hover:text-amber-200 disabled:opacity-50"
+                        className="inline-flex items-center gap-1.5 rounded-md border border-line px-2.5 py-1.5 text-xs text-muted transition hover:border-warning hover:text-warning-ink disabled:opacity-50"
                       >
                         <XCircle size={13} />
                         Skip
@@ -956,7 +1067,7 @@ export default function CareerPage() {
                       <button
                         onClick={() => removeJob(job.id)}
                         disabled={loading}
-                        className="inline-flex items-center gap-1.5 rounded-md border border-slate-700 px-2.5 py-1.5 text-xs text-slate-500 transition hover:border-rose-400 hover:text-rose-200 disabled:opacity-50"
+                        className="inline-flex items-center gap-1.5 rounded-md border border-line px-2.5 py-1.5 text-xs text-muted transition hover:border-danger hover:text-danger-ink disabled:opacity-50"
                       >
                         <Trash2 size={13} />
                         Delete
@@ -969,19 +1080,19 @@ export default function CareerPage() {
           </Panel>
 
           {!result ? (
-            <div className="app-panel soft-fade-in rounded-md border-dashed px-4 py-16 text-center text-sm text-slate-500">
+            <div className="app-panel soft-fade-in rounded-md border-dashed px-4 py-16 text-center text-sm text-muted">
               Paste a CV and job description to generate a fit score, tailored CV points, and a cover letter.
             </div>
           ) : (
             <div id="career-pack-output" className="space-y-4">
               <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                 <div>
-                  <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">Application pack</div>
-                  {resultJobTitle && <div className="mt-1 text-sm font-medium text-white">{resultJobTitle}</div>}
+                  <div className="text-xs font-semibold uppercase tracking-wide text-muted">Application pack</div>
+                  {resultJobTitle && <div className="mt-1 text-sm font-medium text-ink">{resultJobTitle}</div>}
                 </div>
                 <button
                   onClick={downloadPack}
-                  className="flex items-center gap-2 rounded-md border border-slate-700 bg-slate-900/72 px-3 py-2 text-sm text-slate-300 transition duration-150 hover:-translate-y-0.5 hover:border-cyan-400 hover:text-cyan-200 active:translate-y-0"
+                  className="flex items-center gap-2 rounded-md border border-line bg-panel/72 px-3 py-2 text-sm text-ink-subtle transition duration-150 hover:border-brand hover:text-analytic-hover"
                 >
                   <Download size={15} />
                   Download Markdown
@@ -989,28 +1100,28 @@ export default function CareerPage() {
               </div>
 
               {resultWarning && (
-                <div className="rounded-md border border-amber-300/30 bg-amber-300/10 p-3 text-sm text-amber-100">
+                <div className="rounded-md border border-warning/30 bg-warning/10 p-3 text-sm text-warning-ink">
                   {resultWarning}
                 </div>
               )}
 
               {analysis ? (
                 <Panel title="Fit Analysis">
-                  <div className="mb-3 text-4xl font-semibold text-cyan-300">
+                  <div className="mb-3 text-4xl font-semibold text-analytic">
                     {analysis.fit_score ?? "No score"}
-                    <span className="text-base text-slate-500"> / 100</span>
+                    <span className="text-base text-muted"> / 100</span>
                   </div>
-                  <p className="text-sm text-slate-300">{analysis.summary}</p>
+                  <p className="text-sm text-ink-subtle">{analysis.summary}</p>
                   <List title="Matched" items={analysis.matched_skills} />
                   <List title="Weak Signals" items={analysis.missing_or_weak_signals} />
                 </Panel>
               ) : (
                 <Panel title="Model Output">
-                  <p className="mb-3 text-sm text-slate-300">
+                  <p className="mb-3 text-sm text-ink-subtle">
                     The model did not return the structured score this page expects. Try Generate Pack again, or use
                     the raw output below.
                   </p>
-                  <pre className="max-h-[420px] overflow-auto whitespace-pre-wrap rounded-md border border-slate-800 bg-slate-950/70 p-3 text-xs leading-5 text-slate-400">
+                  <pre className="max-h-[420px] overflow-auto whitespace-pre-wrap rounded-md border border-line-soft bg-canvas/70 p-3 text-xs leading-5 text-muted">
                     {formatRawCareerResult(result)}
                   </pre>
                 </Panel>
@@ -1018,8 +1129,8 @@ export default function CareerPage() {
 
               {tailoredCv && (
                 <Panel title="Tailored CV">
-                  <p className="mb-3 text-sm font-medium text-white">{tailoredCv.headline}</p>
-                  <p className="text-sm text-slate-300">{tailoredCv.professional_summary}</p>
+                  <p className="mb-3 text-sm font-medium text-ink">{tailoredCv.headline}</p>
+                  <p className="text-sm text-ink-subtle">{tailoredCv.professional_summary}</p>
                   <List title="Bullets" items={tailoredCv.tailored_bullets} />
                   <List title="Do Not Claim" items={tailoredCv.do_not_claim} />
                 </Panel>
@@ -1027,7 +1138,7 @@ export default function CareerPage() {
 
               {coverLetter && (
                 <Panel title="Cover Letter">
-                  <pre className="whitespace-pre-wrap text-sm leading-6 text-slate-300">{coverLetter.cover_letter}</pre>
+                  <pre className="whitespace-pre-wrap text-sm leading-6 text-ink-subtle">{coverLetter.cover_letter}</pre>
                 </Panel>
               )}
             </div>
@@ -1186,11 +1297,11 @@ function JobMatchDetails({ analysis }: { analysis?: CareerAnalysis | null }) {
   if (!analysis.summary && !matched.length && !missing.length) return null;
 
   return (
-    <div className="mb-3 border-t border-slate-800/80 pt-3">
+    <div className="mb-3 border-t border-line-soft/80 pt-3">
       {analysis.summary && (
         <div className="mb-4">
-          <div className="mb-1 text-xs font-semibold uppercase tracking-wide text-slate-500">Score reasoning</div>
-          <p className="text-sm leading-6 text-slate-300">{analysis.summary}</p>
+          <div className="mb-1 text-xs font-semibold uppercase tracking-wide text-muted">Score reasoning</div>
+          <p className="text-sm leading-6 text-ink-subtle">{analysis.summary}</p>
         </div>
       )}
       <div className="grid gap-4 md:grid-cols-2">
@@ -1213,11 +1324,11 @@ function SignalList({
   if (!items.length) return null;
   return (
     <div>
-      <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">{title}</div>
-      <ul className="space-y-1.5 text-xs leading-5 text-slate-300">
+      <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted">{title}</div>
+      <ul className="space-y-1.5 text-xs leading-5 text-ink-subtle">
         {items.map((item, index) => (
           <li key={`${item}-${index}`} className="flex items-start gap-2">
-            <span className={`mt-2 h-1.5 w-1.5 shrink-0 rounded-full ${tone === "positive" ? "bg-emerald-300" : "bg-amber-300"}`} />
+            <span className={`mt-2 h-1.5 w-1.5 shrink-0 rounded-full ${tone === "positive" ? "bg-success" : "bg-warning"}`} />
             <span>{item}</span>
           </li>
         ))}
@@ -1229,7 +1340,7 @@ function SignalList({
 function Panel({ title, children }: { title: string; children: ReactNode }) {
   return (
     <div className="app-panel soft-fade-in rounded-md p-4">
-      <h2 className="mb-3 text-sm font-semibold text-white">{title}</h2>
+      <h2 className="mb-3 text-sm font-semibold text-ink">{title}</h2>
       {children}
     </div>
   );
@@ -1250,7 +1361,7 @@ function StatusButton({
     <button
       onClick={onClick}
       disabled={loading}
-      className="inline-flex items-center gap-1.5 rounded-md border border-slate-700 bg-slate-950/50 px-2.5 py-1.5 text-xs text-slate-200 transition hover:border-cyan-400 hover:text-cyan-100 disabled:opacity-50"
+      className="inline-flex items-center gap-1.5 rounded-md border border-line bg-canvas/50 px-2.5 py-1.5 text-xs text-ink transition hover:border-brand hover:text-analytic-hover disabled:opacity-50"
     >
       {loading ? <Loader2 size={13} className="animate-spin" /> : icon}
       {label}
@@ -1262,10 +1373,10 @@ function List({ title, items }: { title: string; items?: string[] }) {
   if (!items?.length) return null;
   return (
     <div className="mt-4">
-      <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">{title}</div>
-      <ul className="space-y-2 text-sm text-slate-300">
+      <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted">{title}</div>
+      <ul className="space-y-2 text-sm text-ink-subtle">
         {items.map((item, index) => (
-          <li key={index} className="rounded-md border border-slate-800/80 bg-slate-950/58 px-3 py-2">
+          <li key={index} className="rounded-md border border-line-soft/80 bg-canvas/58 px-3 py-2">
             {item}
           </li>
         ))}

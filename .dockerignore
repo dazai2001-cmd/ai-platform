@@ -1,15 +1,21 @@
-.env
-.git
-.gitignore
-.pytest_cache
-__pycache__
-*.pyc
+# The API image is allow-listed to runtime Python packages and dependencies.
+*
+!requirements.txt
+!agents/
+!agents/**
+!application/
+!application/**
+!apps/
+!apps/**
+!core/
+!core/**
+!domain/
+!domain/**
+!infrastructure/
+!infrastructure/**
+!services/
+!services/**
 
-frontend/nextjs-app/node_modules
-frontend/nextjs-app/.next
-
-data/raw
-data/uploads
-data/indexes
-data/processed
-data/cache
+**/__pycache__/
+**/*.py[cod]
+**/*.test.*

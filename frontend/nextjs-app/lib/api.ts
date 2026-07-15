@@ -1,6 +1,84 @@
 const CONFIGURED_BASE = process.env.NEXT_PUBLIC_API_URL || "";
-const API_TOKEN = process.env.NEXT_PUBLIC_API_TOKEN || "";
-const AUTH_STORAGE_KEY = "ai_platform_auth_token";
+const REQUEST_TIMEOUT_MS = 180_000;
+const STREAM_CONNECTION_TIMEOUT_MS = 60_000;
+
+type RequestDeadline = {
+  signal: AbortSignal;
+  race<T>(promise: Promise<T>): Promise<T>;
+  releaseConnection(): void;
+  cleanup(): void;
+};
+
+export type CareerProfileImportResult = {
+  cv_text: string;
+  updated_at: number | null;
+  filename: string;
+  file_type: "pdf" | "docx";
+  characters: number;
+  pages: number | null;
+  used_ocr: boolean;
+};
+
+function timeoutError() {
+  const error = new Error("Request timed out");
+  error.name = "TimeoutError";
+  return error;
+}
+
+function abortError(signal: AbortSignal) {
+  if (signal.reason instanceof Error) return signal.reason;
+  const error = new Error(typeof signal.reason === "string" ? signal.reason : "Request aborted");
+  error.name = "AbortError";
+  return error;
+}
+
+function createDeadline(externalSignal: AbortSignal | undefined, timeoutMs: number): RequestDeadline {
+  const controller = new AbortController();
+  let active = true;
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  let rejectDeadline!: (reason: Error) => void;
+  const expired = new Promise<never>((_resolve, reject) => {
+    rejectDeadline = reject;
+  });
+
+  const abort = (reason: Error) => {
+    if (!active) return;
+    active = false;
+    controller.abort(reason);
+    rejectDeadline(reason);
+  };
+  const onExternalAbort = () => abort(abortError(externalSignal!));
+
+  if (externalSignal?.aborted) {
+    onExternalAbort();
+  } else {
+    externalSignal?.addEventListener("abort", onExternalAbort, { once: true });
+    timeout = setTimeout(() => abort(timeoutError()), timeoutMs);
+  }
+
+  const clearRequestTimeout = () => {
+    if (timeout !== undefined) {
+      clearTimeout(timeout);
+      timeout = undefined;
+    }
+  };
+
+  return {
+    signal: controller.signal,
+    race: <T>(promise: Promise<T>) => Promise.race([promise, expired]),
+    releaseConnection: () => {
+      // A successful streaming response has connected. Stop the connection
+      // deadline, but keep forwarding the caller's signal to its response body.
+      clearRequestTimeout();
+      if (!externalSignal) active = false;
+    },
+    cleanup: () => {
+      active = false;
+      clearRequestTimeout();
+      externalSignal?.removeEventListener("abort", onExternalAbort);
+    },
+  };
+}
 
 function baseUrl() {
   if (typeof window === "undefined") return CONFIGURED_BASE;
@@ -12,56 +90,79 @@ function baseUrl() {
 function headers(contentType?: string) {
   const h: Record<string, string> = {};
   if (contentType) h["Content-Type"] = contentType;
-  if (API_TOKEN) h["X-API-Token"] = API_TOKEN;
-  if (typeof window !== "undefined") {
-    const authToken = window.localStorage.getItem(AUTH_STORAGE_KEY);
-    if (authToken) h.Authorization = `Bearer ${authToken}`;
-  }
   return h;
 }
 
-async function parseResponse(res: Response) {
-  const data = await res.json().catch(() => ({}));
+async function parseResponse(res: Response, deadline: RequestDeadline) {
+  let data: any = {};
+  try {
+    data = await deadline.race(res.json());
+  } catch (error) {
+    // Preserve the existing non-JSON fallback, but never swallow a request
+    // timeout or caller-initiated abort while the body is being parsed.
+    if (deadline.signal.aborted) throw error;
+  }
   if (!res.ok) {
     throw new Error(data.error || `Request failed (${res.status})`);
   }
   return data;
 }
 
-async function post(path: string, body: object) {
-  const res = await fetch(`${baseUrl()}${path}`, {
-    method: "POST",
-    headers: headers("application/json"),
-    body: JSON.stringify(body),
-  });
-  return parseResponse(res);
+async function request(path: string, init: RequestInit = {}) {
+  const deadline = createDeadline(init.signal || undefined, REQUEST_TIMEOUT_MS);
+  try {
+    const res = await deadline.race(fetch(`${baseUrl()}${path}`, {
+      ...init,
+      credentials: "include",
+      signal: deadline.signal,
+    }));
+    return await parseResponse(res, deadline);
+  } finally {
+    deadline.cleanup();
+  }
 }
 
-async function postRaw(path: string, body: object) {
-  const res = await fetch(`${baseUrl()}${path}`, {
+async function post(path: string, body: object, signal?: AbortSignal) {
+  return request(path, {
     method: "POST",
     headers: headers("application/json"),
     body: JSON.stringify(body),
+    signal,
   });
-  if (!res.ok) {
-    const data = await res.json().catch(() => ({}));
-    throw new Error(data.error || `Request failed (${res.status})`);
+}
+
+async function postRaw(path: string, body: object, externalSignal?: AbortSignal) {
+  const deadline = createDeadline(externalSignal, STREAM_CONNECTION_TIMEOUT_MS);
+  let connected = false;
+  try {
+    const res = await deadline.race(fetch(`${baseUrl()}${path}`, {
+      method: "POST",
+      headers: headers("application/json"),
+      body: JSON.stringify(body),
+      credentials: "include",
+      signal: deadline.signal,
+    }));
+    if (!res.ok) {
+      await parseResponse(res, deadline);
+    }
+    if (deadline.signal.aborted) throw abortError(deadline.signal);
+    deadline.releaseConnection();
+    connected = true;
+    return res;
+  } finally {
+    if (!connected) deadline.cleanup();
   }
-  return res;
 }
 
 async function get(path: string) {
-  const res = await fetch(`${baseUrl()}${path}`, { headers: headers() });
-  return parseResponse(res);
+  return request(path, { headers: headers() });
 }
 
 async function upload(path: string, formData: FormData) {
-  const res = await fetch(`${baseUrl()}${path}`, { method: "POST", headers: headers(), body: formData });
-  return parseResponse(res);
+  return request(path, { method: "POST", headers: headers(), body: formData });
 }
 
 export const api = {
-  authStorageKey: AUTH_STORAGE_KEY,
   signup: (email: string, password: string) => post("/api/auth/signup", { email, password }),
   login: (email: string, password: string) => post("/api/auth/login", { email, password }),
   verifyEmail: (token: string) => get(`/api/auth/verify?token=${encodeURIComponent(token)}`),
@@ -70,30 +171,34 @@ export const api = {
   logout: () => post("/api/auth/logout", {}),
 
   // Chat (auto-routed)
-  chat: (query: string, sessionId?: string, dataset?: string) =>
-    post("/api/chat", { query, session_id: sessionId, dataset }),
-  generalChat: (query: string, sessionId?: string, model?: string) =>
-    post("/api/chat/general", { query, session_id: sessionId, model }),
-  generalChatStream: (query: string, sessionId?: string, model?: string) =>
-    postRaw("/api/chat/general/stream", { query, session_id: sessionId, model }),
+  chat: (query: string, sessionId?: string, dataset?: string, signal?: AbortSignal) =>
+    post("/api/chat", { query, session_id: sessionId, dataset }, signal),
+  chatStream: (query: string, sessionId?: string, dataset?: string, signal?: AbortSignal) =>
+    postRaw("/api/chat/stream", { query, session_id: sessionId, dataset }, signal),
+  workspaceChat: (query: string, sessionId?: string, signal?: AbortSignal) =>
+    post("/api/chat/workspace", { query, session_id: sessionId }, signal),
+  generalChat: (query: string, sessionId?: string, model?: string, signal?: AbortSignal) =>
+    post("/api/chat/general", { query, session_id: sessionId, model }, signal),
+  generalChatStream: (query: string, sessionId?: string, model?: string, signal?: AbortSignal) =>
+    postRaw("/api/chat/general/stream", { query, session_id: sessionId, model }, signal),
   chatConversations: () => get("/api/chat/conversations"),
   createChatConversation: (id?: string, title?: string) =>
     post("/api/chat/conversations", { id, title }),
   getChatConversation: (id: string) => get(`/api/chat/conversations/${id}`),
   saveChatConversation: (id: string, title: string, messages: any[]) =>
-    fetch(`${baseUrl()}/api/chat/conversations/${id}`, {
+    request(`/api/chat/conversations/${id}`, {
       method: "PUT",
       headers: headers("application/json"),
       body: JSON.stringify({ title, messages }),
-    }).then(parseResponse),
+    }),
   deleteChatConversation: (id: string) =>
-    fetch(`${baseUrl()}/api/chat/conversations/${id}`, { method: "DELETE", headers: headers() }).then(parseResponse),
+    request(`/api/chat/conversations/${id}`, { method: "DELETE", headers: headers() }),
 
   // RAG
   ragAsk: (question: string, sessionId?: string) =>
     post("/api/rag/ask", { question, session_id: sessionId }),
-  ragAskStream: (question: string, sessionId?: string) =>
-    postRaw("/api/rag/ask/stream", { question, session_id: sessionId }),
+  ragAskStream: (question: string, sessionId?: string, signal?: AbortSignal) =>
+    postRaw("/api/rag/ask/stream", { question, session_id: sessionId }, signal),
   ragUploadPdf: (file: File) => {
     const fd = new FormData();
     fd.append("file", file);
@@ -111,7 +216,7 @@ export const api = {
   ragDocuments: () => get("/api/rag/documents"),
   ragDocumentPreview: (source: string) => get(`/api/rag/documents/${encodeURIComponent(source)}`),
   ragDeleteDocument: (source: string) =>
-    fetch(`${baseUrl()}/api/rag/documents/${encodeURIComponent(source)}`, { method: "DELETE", headers: headers() }).then(parseResponse),
+    request(`/api/rag/documents/${encodeURIComponent(source)}`, { method: "DELETE", headers: headers() }),
 
   // Jobs
   job: (jobId: string) => get(`/api/jobs/${jobId}`),
@@ -134,22 +239,22 @@ export const api = {
   memoryFacts: () => get("/api/memory/facts"),
   addMemoryFact: (content: string) => post("/api/memory/facts", { content }),
   deleteMemoryFact: (factId: string) =>
-    fetch(`${baseUrl()}/api/memory/facts/${factId}`, { method: "DELETE", headers: headers() }).then(parseResponse),
+    request(`/api/memory/facts/${factId}`, { method: "DELETE", headers: headers() }),
   clearHistory: (sessionId: string) =>
-    fetch(`${baseUrl()}/api/memory/${sessionId}`, { method: "DELETE", headers: headers() }).then(parseResponse),
+    request(`/api/memory/${sessionId}`, { method: "DELETE", headers: headers() }),
 
   // Health & analytics
   health: () => get("/api/health"),
   warmup: (model?: string) => post("/api/health/warmup", { model }),
   modelSettings: () => get("/api/settings/models"),
   updateModelSettings: (taskModels: Record<string, string>) =>
-    fetch(`${baseUrl()}/api/settings/models`, {
+    request("/api/settings/models", {
       method: "PUT",
       headers: headers("application/json"),
       body: JSON.stringify({ task_models: taskModels }),
-    }).then(parseResponse),
+    }),
   resetModelSettings: () =>
-    fetch(`${baseUrl()}/api/settings/models`, { method: "DELETE", headers: headers() }).then(parseResponse),
+    request("/api/settings/models", { method: "DELETE", headers: headers() }),
   analyticsSummary: (hours = 24) => get(`/api/analytics/summary?since_hours=${hours}`),
   analyticsRecent: (n = 20) => get(`/api/analytics/recent?n=${n}`),
 
@@ -163,19 +268,26 @@ export const api = {
   careerPack: (cvText: string, jobDescription: string, model?: string) =>
     post("/api/career/pack", { cv_text: cvText, job_description: jobDescription, model }),
   careerProfile: () => get("/api/career/profile"),
+  careerImportProfile: (file: File) => {
+    const fd = new FormData();
+    fd.append("file", file);
+    return upload("/api/career/profile/import", fd) as Promise<CareerProfileImportResult>;
+  },
   updateCareerProfile: (cvText: string) =>
-    fetch(`${baseUrl()}/api/career/profile`, {
+    request("/api/career/profile", {
       method: "PUT",
       headers: headers("application/json"),
       body: JSON.stringify({ cv_text: cvText }),
-    }).then(parseResponse),
+    }),
+  deleteCareerProfile: () =>
+    request("/api/career/profile", { method: "DELETE", headers: headers() }),
   careerPreferences: () => get("/api/career/preferences"),
   updateCareerPreferences: (preferences: Record<string, string>) =>
-    fetch(`${baseUrl()}/api/career/preferences`, {
+    request("/api/career/preferences", {
       method: "PUT",
       headers: headers("application/json"),
       body: JSON.stringify(preferences),
-    }).then(parseResponse),
+    }),
   careerJobs: () => get("/api/career/jobs"),
   saveCareerJob: (job: {
     description: string;
@@ -190,8 +302,8 @@ export const api = {
     post("/api/career/jobs/import-url", { url, cv_text: cvText }),
   searchCareerJobs: (cvText?: string, limit = 10) =>
     post("/api/career/jobs/search", { cv_text: cvText, limit }),
-  searchCareerJobsStream: (cvText?: string, limit = 10) =>
-    postRaw("/api/career/jobs/search/stream", { cv_text: cvText, limit }),
+  searchCareerJobsStream: (cvText?: string, limit = 10, signal?: AbortSignal) =>
+    postRaw("/api/career/jobs/search/stream", { cv_text: cvText, limit }, signal),
   scoreCareerJob: (jobId: string, cvText: string) =>
     post(`/api/career/jobs/${jobId}/score`, { cv_text: cvText }),
   generateCareerMatchPack: (jobId: string, cvText: string) =>
@@ -202,11 +314,11 @@ export const api = {
   careerScoreBatch: (batchId: string) => get(`/api/career/jobs/score-batches/${batchId}`),
   cancelCareerScoreBatch: (batchId: string) => post(`/api/career/jobs/score-batches/${batchId}/cancel`, {}),
   updateCareerJobStatus: (jobId: string, status: string) =>
-    fetch(`${baseUrl()}/api/career/jobs/${jobId}/status`, {
+    request(`/api/career/jobs/${jobId}/status`, {
       method: "PUT",
       headers: headers("application/json"),
       body: JSON.stringify({ status }),
-    }).then(parseResponse),
+    }),
   deleteCareerJob: (jobId: string) =>
-    fetch(`${baseUrl()}/api/career/jobs/${jobId}`, { method: "DELETE", headers: headers() }).then(parseResponse),
+    request(`/api/career/jobs/${jobId}`, { method: "DELETE", headers: headers() }),
 };

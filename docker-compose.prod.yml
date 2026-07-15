@@ -1,0 +1,165 @@
+name: ai-platform-prod
+
+services:
+  api:
+    image: ${API_IMAGE:-ai-platform-api:prod}
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        APP_VERSION: ${APP_VERSION:-dev}
+        GIT_SHA: ${GIT_SHA:-unknown}
+    environment:
+      APP_ENV: production
+      AI_RUNTIME: ${AI_RUNTIME:-cloud}
+      DEBUG: "false"
+      PORT: "5000"
+      SECRET_KEY: "${SECRET_KEY:?Set SECRET_KEY to at least 32 random characters}"
+      API_AUTH_TOKEN: "${API_AUTH_TOKEN:-}"
+      AUTH_REQUIRED: "true"
+      AUTH_COOKIE_SECURE: "true"
+      AUTH_COOKIE_SAMESITE: Lax
+      SEND_VERIFICATION_EMAILS: "true"
+      RESEND_API_KEY: "${RESEND_API_KEY:?Set RESEND_API_KEY for production email verification}"
+      EMAIL_FROM: "${EMAIL_FROM:-AI Platform <verify@example.com>}"
+      APP_PUBLIC_URL: "${APP_PUBLIC_URL:?Set APP_PUBLIC_URL to the public HTTPS frontend URL}"
+      CORS_ORIGINS: "${CORS_ORIGINS:?Set CORS_ORIGINS to the public HTTPS frontend origin}"
+      DATABASE_URL: "${DATABASE_URL:?Set DATABASE_URL to the Supabase PostgreSQL connection URL}"
+      DATABASE_SCHEMA: "${DATABASE_SCHEMA:-app_private}"
+      DATABASE_SSLMODE: "${DATABASE_SSLMODE:-require}"
+      DATABASE_CONNECT_TIMEOUT_SECONDS: "${DATABASE_CONNECT_TIMEOUT_SECONDS:-10}"
+      DATABASE_POOL_MIN_SIZE: "${DATABASE_POOL_MIN_SIZE:-1}"
+      DATABASE_POOL_MAX_SIZE: "${DATABASE_POOL_MAX_SIZE:-5}"
+      REDIS_URL: redis://redis:6379/0
+      RATE_LIMIT_ENABLED: "true"
+      RATE_LIMIT_STORAGE_URI: redis://redis:6379/1
+      TRUST_PROXY_HOPS: "${TRUST_PROXY_HOPS:-1}"
+      ANALYTICS_STORE_QUERY_TEXT: "false"
+      OLLAMA_BASE_URL: "${OLLAMA_BASE_URL:-http://host.docker.internal:11434}"
+      GEMINI_API_KEY: "${GEMINI_API_KEY:-}"
+      GEMINI_MODELS: "${GEMINI_MODELS:-gemini-2.0-flash}"
+      OPENROUTER_API_KEY: "${OPENROUTER_API_KEY:-}"
+      OPENROUTER_MODELS: "${OPENROUTER_MODELS:-}"
+      ADZUNA_APP_ID: "${ADZUNA_APP_ID:-}"
+      ADZUNA_APP_KEY: "${ADZUNA_APP_KEY:-}"
+      REED_API_KEY: "${REED_API_KEY:-}"
+    expose:
+      - "5000"
+    volumes:
+      - app_data:/app/data
+    tmpfs:
+      - /tmp:size=512m,uid=10001,gid=10001,mode=1777
+    extra_hosts:
+      - host.docker.internal:host-gateway
+    networks:
+      edge:
+        # Ensure the internet-capable network remains the default gateway;
+        # `data` is deliberately isolated for Redis.
+        gw_priority: 1
+      data: {}
+    depends_on:
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:5000/api/health/live', timeout=4).read()"]
+      interval: 30s
+      timeout: 5s
+      start_period: 90s
+      retries: 3
+    init: true
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 256
+    stop_grace_period: 45s
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
+
+  frontend:
+    image: ${FRONTEND_IMAGE:-ai-platform-frontend:prod}
+    build:
+      context: ./frontend/nextjs-app
+      dockerfile: Dockerfile
+      args:
+        APP_VERSION: ${APP_VERSION:-dev}
+        GIT_SHA: ${GIT_SHA:-unknown}
+        NEXT_PUBLIC_API_URL: ""
+        NEXT_PUBLIC_AUTH_REQUIRED: "true"
+    environment:
+      API_INTERNAL_URL: http://api:5000
+      API_AUTH_TOKEN: "${API_AUTH_TOKEN:-}"
+      HOSTNAME: 0.0.0.0
+      PORT: "3000"
+    ports:
+      - "${BIND_ADDRESS:-127.0.0.1}:${APP_PORT:-3000}:3000"
+    tmpfs:
+      - /tmp:size=64m,uid=1001,gid=1001,mode=1777
+      - /app/.next/cache:size=128m,uid=1001,gid=1001,mode=0750
+    networks:
+      - edge
+    depends_on:
+      api:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      start_period: 20s
+      retries: 3
+    init: true
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 128
+    stop_grace_period: 20s
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes", "--save", "60", "1000"]
+    volumes:
+      - redis_data:/data
+    tmpfs:
+      - /tmp:size=32m
+    networks:
+      - data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 128
+    stop_grace_period: 30s
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
+
+networks:
+  edge:
+  data:
+    internal: true
+
+volumes:
+  app_data:
+  redis_data:

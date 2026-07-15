@@ -23,6 +23,15 @@ type AuthContextValue = {
 
 const AuthContext = createContext<AuthContextValue | null>(null);
 const AUTH_REQUIRED = process.env.NEXT_PUBLIC_AUTH_REQUIRED === "true";
+const LEGACY_AUTH_STORAGE_KEY = "ai_platform_auth_token";
+
+function clearLegacyBrowserToken() {
+  try {
+    window.localStorage.removeItem(LEGACY_AUTH_STORAGE_KEY);
+  } catch {
+    // Storage can be unavailable in hardened/private browser contexts.
+  }
+}
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
@@ -31,17 +40,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const router = useRouter();
 
   async function refresh() {
-    const token = window.localStorage.getItem(api.authStorageKey);
-    if (!token) {
-      setUser(null);
-      setLoading(false);
-      return;
-    }
+    setLoading(true);
+    clearLegacyBrowserToken();
     try {
       const data = await api.me();
       setUser(data.user);
     } catch {
-      window.localStorage.removeItem(api.authStorageKey);
       setUser(null);
     } finally {
       setLoading(false);
@@ -63,7 +67,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     authRequired: AUTH_REQUIRED,
     async login(email: string, password: string) {
       const data = await api.login(email, password);
-      window.localStorage.setItem(api.authStorageKey, data.token);
+      clearLegacyBrowserToken();
       setUser(data.user);
     },
     async signup(email: string, password: string) {
@@ -73,7 +77,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       try {
         await api.logout();
       } finally {
-        window.localStorage.removeItem(api.authStorageKey);
+        clearLegacyBrowserToken();
         setUser(null);
         if (AUTH_REQUIRED) router.replace("/auth");
       }

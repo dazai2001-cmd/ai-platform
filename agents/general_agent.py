@@ -69,6 +69,7 @@ class GeneralAgent:
             memory.add(session_id, "assistant", answer, user_id=user_id)
 
             analytics.record(QueryEvent(
+                user_id=user_id,
                 session_id=session_id,
                 query=query,
                 agent="general",
@@ -85,6 +86,7 @@ class GeneralAgent:
             }
         except Exception as e:
             analytics.record(QueryEvent(
+                user_id=user_id,
                 session_id=session_id,
                 query=query,
                 agent="general",
@@ -92,6 +94,7 @@ class GeneralAgent:
                 latency_ms=(time.monotonic() - t0) * 1000,
                 success=False,
                 error=str(e),
+                error_type=type(e).__name__,
             ))
             raise
 
@@ -118,6 +121,7 @@ class GeneralAgent:
                 memory.add(session_id, "assistant", answer, user_id=user_id)
 
             analytics.record(QueryEvent(
+                user_id=user_id,
                 session_id=session_id,
                 query=query,
                 agent="general",
@@ -125,6 +129,7 @@ class GeneralAgent:
                 latency_ms=(time.monotonic() - t0) * 1000,
                 success=success,
                 error=error,
+                error_type="stream_error" if error else None,
             ))
 
         return generate(), session_id, model

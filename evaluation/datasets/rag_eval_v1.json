@@ -1,0 +1,82 @@
+{
+  "schema_version": 1,
+  "name": "rag-offline-example-v1",
+  "description": "Small deterministic fixture suite for smoke-testing the RAG evaluation harness.",
+  "thresholds": {
+    "retrieval_hit": 1.0,
+    "source_accuracy": 1.0,
+    "citation_correctness": 0.5,
+    "keyword_coverage": 0.75,
+    "groundedness": 0.5
+  },
+  "cases": [
+    {
+      "id": "atlas-launch-date",
+      "question": "When is Project Atlas scheduled to launch?",
+      "expected_sources": [
+        "project_atlas_handbook.md"
+      ],
+      "expected_keywords": [
+        "15 September 2026",
+        "Project Atlas"
+      ],
+      "fixture": {
+        "answer": "Project Atlas is scheduled to launch on 15 September 2026.",
+        "sources": [
+          {
+            "source": "project_atlas_handbook.md",
+            "score": 0.12
+          },
+          {
+            "source": "team_directory.md",
+            "score": 0.48
+          }
+        ],
+        "contexts": [
+          "The approved Project Atlas launch date is 15 September 2026 after the final readiness review.",
+          "The project team directory lists the Atlas engineering and operations contacts."
+        ]
+      }
+    },
+    {
+      "id": "remote-work-policy",
+      "question": "How many remote working days are available each week?",
+      "expected_sources": [
+        "people_policy.md"
+      ],
+      "expected_keywords": [
+        "three days",
+        "per week"
+      ],
+      "fixture": {
+        "answer": "Employees may work remotely for up to three days per week.",
+        "sources": [
+          "people_policy.md"
+        ],
+        "contexts": [
+          "The flexible working policy permits employees to work remotely for up to three days per week."
+        ]
+      }
+    },
+    {
+      "id": "backup-retention",
+      "question": "How long are encrypted production backups retained?",
+      "expected_sources": [
+        "operations_runbook.md"
+      ],
+      "expected_keywords": [
+        "encrypted",
+        "30 days"
+      ],
+      "fixture": {
+        "answer": "Encrypted production backups are retained for 30 days.",
+        "sources": [
+          "operations_runbook.md"
+        ],
+        "contexts": [
+          "Production backups are encrypted at rest and retained for 30 days before automatic deletion."
+        ]
+      }
+    }
+  ]
+}

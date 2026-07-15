@@ -1,23 +1,29 @@
 # Web
 flask==3.0.3
 flask-cors==4.0.1
+flask-limiter==4.1.1
+gunicorn==23.0.0
 
 # HTTP
 requests==2.32.3
 
 # RAG / Embeddings
-faiss-cpu==1.8.0
+faiss-cpu==1.8.0.post1
 sentence-transformers==2.7.0
 pymupdf==1.24.4
 beautifulsoup4==4.12.3
+python-docx==1.1.2
 
 # BI
 pandas==2.2.2
 openpyxl==3.1.2
-pandasql==0.7.3
 
 # Memory
 redis==5.0.4
+
+# PostgreSQL / Supabase
+psycopg[binary]==3.3.4
+psycopg-pool==3.3.1
 
 # Utils
 python-dotenv==1.0.1
@@ -26,4 +32,5 @@ numpy==1.26.4
 
 # CPU-only torch (stops CUDA being pulled in)
 --extra-index-url https://download.pytorch.org/whl/cpu
-torch==2.3.0+cpu
+torch==2.6.0+cpu; sys_platform == "linux" or sys_platform == "win32"
+torch==2.6.0; sys_platform == "darwin"

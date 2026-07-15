@@ -18,7 +18,15 @@ import {
   YAxis,
 } from "recharts";
 
-const COLORS = ["#22d3ee", "#818cf8", "#34d399", "#fbbf24", "#f472b6"];
+const COLORS = ["var(--chart-1)", "var(--chart-2)", "var(--chart-3)", "var(--chart-4)", "var(--chart-5)"];
+const GRID_COLOR = "rgb(var(--color-line-soft))";
+const MUTED_COLOR = "rgb(var(--color-muted))";
+const tooltipStyle = {
+  backgroundColor: "rgb(var(--color-panel))",
+  border: "1px solid rgb(var(--color-line))",
+  borderRadius: 8,
+  color: "rgb(var(--color-ink))",
+};
 
 interface ChartSpec {
   chart_type: "bar" | "line" | "pie" | "scatter";
@@ -46,15 +54,15 @@ export default function ChartRenderer({ chart, compact = false }: { chart: Chart
   const height = compact ? 180 : 280;
 
   return (
-    <div className="mt-4 rounded-md border border-slate-800 bg-slate-950/80 p-4">
-      <p className="mb-4 truncate text-sm font-medium text-slate-200">{chart.title}</p>
+    <div className="mt-4 rounded-md border border-line-soft bg-panel p-4">
+      <p className="mb-4 truncate text-sm font-medium text-ink">{chart.title}</p>
       <ResponsiveContainer width="100%" height={height}>
         {chart.chart_type === "bar" ? (
           <BarChart data={data}>
-            <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" />
-            <XAxis dataKey="name" tick={{ fill: "#94a3b8", fontSize: 12 }} />
-            <YAxis tick={{ fill: "#94a3b8", fontSize: 12 }} />
-            <Tooltip contentStyle={{ backgroundColor: "#020617", border: "1px solid #334155", borderRadius: 6 }} />
+            <CartesianGrid strokeDasharray="3 3" stroke={GRID_COLOR} />
+            <XAxis dataKey="name" tick={{ fill: MUTED_COLOR, fontSize: 12 }} />
+            <YAxis tick={{ fill: MUTED_COLOR, fontSize: 12 }} />
+            <Tooltip contentStyle={tooltipStyle} />
             {!compact && <Legend />}
             {series.map((item, index) => (
               <Bar key={item.name} dataKey={item.name} fill={COLORS[index % COLORS.length]} radius={[3, 3, 0, 0]} />
@@ -62,10 +70,10 @@ export default function ChartRenderer({ chart, compact = false }: { chart: Chart
           </BarChart>
         ) : chart.chart_type === "line" ? (
           <LineChart data={data}>
-            <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" />
-            <XAxis dataKey="name" tick={{ fill: "#94a3b8", fontSize: 12 }} />
-            <YAxis tick={{ fill: "#94a3b8", fontSize: 12 }} />
-            <Tooltip contentStyle={{ backgroundColor: "#020617", border: "1px solid #334155", borderRadius: 6 }} />
+            <CartesianGrid strokeDasharray="3 3" stroke={GRID_COLOR} />
+            <XAxis dataKey="name" tick={{ fill: MUTED_COLOR, fontSize: 12 }} />
+            <YAxis tick={{ fill: MUTED_COLOR, fontSize: 12 }} />
+            <Tooltip contentStyle={tooltipStyle} />
             {!compact && <Legend />}
             {series.map((item, index) => (
               <Line
@@ -83,16 +91,16 @@ export default function ChartRenderer({ chart, compact = false }: { chart: Chart
             <Pie data={data} dataKey={series[0]?.name} nameKey="name" cx="50%" cy="50%" outerRadius={compact ? 54 : 96} label={!compact}>
               {data.map((_, i) => <Cell key={i} fill={COLORS[i % COLORS.length]} />)}
             </Pie>
-            <Tooltip contentStyle={{ backgroundColor: "#020617", border: "1px solid #334155", borderRadius: 6 }} />
+            <Tooltip contentStyle={tooltipStyle} />
             {!compact && <Legend />}
           </PieChart>
         ) : (
           <ScatterChart>
-            <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" />
-            <XAxis dataKey="name" tick={{ fill: "#94a3b8", fontSize: 12 }} />
-            <YAxis dataKey={series[0]?.name} tick={{ fill: "#94a3b8", fontSize: 12 }} />
-            <Tooltip contentStyle={{ backgroundColor: "#020617", border: "1px solid #334155", borderRadius: 6 }} />
-            <Scatter data={data} dataKey={series[0]?.name} fill="#22d3ee" />
+            <CartesianGrid strokeDasharray="3 3" stroke={GRID_COLOR} />
+            <XAxis dataKey="name" tick={{ fill: MUTED_COLOR, fontSize: 12 }} />
+            <YAxis dataKey={series[0]?.name} tick={{ fill: MUTED_COLOR, fontSize: 12 }} />
+            <Tooltip contentStyle={tooltipStyle} />
+            <Scatter data={data} dataKey={series[0]?.name} fill={COLORS[0]} />
           </ScatterChart>
         )}
       </ResponsiveContainer>
