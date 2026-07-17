@@ -239,6 +239,59 @@ class CloudProviderTests(unittest.TestCase):
         self.assertEqual(post.call_args.kwargs["headers"]["Authorization"], "Bearer test-key")
         self.assertEqual(post.call_args.kwargs["json"]["model"], model)
 
+    def test_openrouter_retries_structured_output_without_provider_json_mode(self):
+        class UnsupportedJsonResponse:
+            status_code = 400
+
+            def raise_for_status(self):
+                raise requests.exceptions.HTTPError(response=self)
+
+        class Response:
+            def raise_for_status(self):
+                return None
+
+            def json(self):
+                return {"choices": [{"message": {"content": '{"fit_score": 90}'}}]}
+
+        with (
+            patch.object(settings, "OPENROUTER_API_KEY", "test-key"),
+            patch.object(settings, "OPENROUTER_MODELS", ["openrouter/free"]),
+            patch(
+                "infrastructure.llm.ollama_client.requests.post",
+                side_effect=[UnsupportedJsonResponse(), Response()],
+            ) as post,
+        ):
+            answer = ollama.generate(
+                "openrouter:openrouter/free",
+                "Return JSON",
+                json_format=True,
+            )
+
+        self.assertEqual(answer, '{"fit_score": 90}')
+        self.assertIn("response_format", post.call_args_list[0].kwargs["json"])
+        self.assertNotIn("response_format", post.call_args_list[1].kwargs["json"])
+
+    def test_openrouter_retries_transport_failures(self):
+        class Response:
+            def raise_for_status(self):
+                return None
+
+            def json(self):
+                return {"choices": [{"message": {"content": "retry ok"}}]}
+
+        with (
+            patch.object(settings, "OPENROUTER_API_KEY", "test-key"),
+            patch.object(settings, "OPENROUTER_MODELS", ["openrouter/free"]),
+            patch(
+                "infrastructure.llm.ollama_client.requests.post",
+                side_effect=[requests.exceptions.Timeout("provider timed out"), Response()],
+            ) as post,
+        ):
+            answer = ollama.generate("openrouter:openrouter/free", "hello")
+
+        self.assertEqual(answer, "retry ok")
+        self.assertEqual(post.call_count, 2)
+
     def test_gemini_rate_limit_falls_back_to_openrouter(self):
         class RateLimitResponse:
             status_code = 429

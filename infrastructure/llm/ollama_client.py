@@ -227,25 +227,36 @@ class OllamaClient:
             "temperature": temperature,
             "max_tokens": max_tokens or settings.LLM_MAX_TOKENS,
         }
-        if json_format:
-            payload["response_format"] = {"type": "json_object"}
         headers = {
             "Authorization": f"Bearer {settings.OPENROUTER_API_KEY}",
             "Content-Type": "application/json",
             "HTTP-Referer": settings.APP_PUBLIC_URL,
             "X-Title": "AI Platform",
         }
-        try:
-            r = requests.post(
-                f"{settings.OPENROUTER_BASE_URL}/chat/completions",
-                json=payload,
-                headers=headers,
-                timeout=settings.OLLAMA_TIMEOUT_SECONDS,
-            )
-            r.raise_for_status()
-            return r.json()["choices"][0]["message"]["content"].strip()
-        except requests.exceptions.RequestException as e:
-            raise RuntimeError(self._safe_provider_error("OpenRouter", e)) from e
+        enforce_json = json_format
+        for attempt in range(3):
+            request_payload = dict(payload)
+            if enforce_json:
+                request_payload["response_format"] = {"type": "json_object"}
+            try:
+                r = requests.post(
+                    f"{settings.OPENROUTER_BASE_URL}/chat/completions",
+                    json=request_payload,
+                    headers=headers,
+                    timeout=settings.OLLAMA_TIMEOUT_SECONDS,
+                )
+                r.raise_for_status()
+                return r.json()["choices"][0]["message"]["content"].strip()
+            except requests.exceptions.RequestException as e:
+                status = getattr(getattr(e, "response", None), "status_code", None)
+                if attempt < 2 and enforce_json and status == 400:
+                    enforce_json = False
+                    continue
+                if attempt < 2 and (status is None or status == 429 or status >= 500):
+                    continue
+                raise RuntimeError(self._safe_provider_error("OpenRouter", e)) from e
+
+        raise RuntimeError("OpenRouter request failed.")
 
     def _can_fallback_to_openrouter(self, error: RuntimeError) -> bool:
         if not settings.OPENROUTER_API_KEY or not settings.OPENROUTER_MODELS:
