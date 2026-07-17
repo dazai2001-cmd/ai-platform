@@ -718,6 +718,17 @@ class CareerJobService:
                 (row["id"],),
             )
         }
+        score_counts = db.query_one(
+            """
+            SELECT COALESCE(SUM(
+                CASE WHEN task.status = 'completed' AND job.fit_score IS NOT NULL THEN 1 ELSE 0 END
+            ), 0) AS scored
+            FROM career_score_tasks AS task
+            JOIN career_jobs AS job ON job.id = task.job_id
+            WHERE task.batch_id = ?
+            """,
+            (row["id"],),
+        ) or {"scored": 0}
         current = db.query_one(
             """
             SELECT job.id, job.title
@@ -728,14 +739,17 @@ class CareerJobService:
             """,
             (row["id"],),
         )
-        processed = counts.get("completed", 0) + counts.get("failed", 0)
+        completed_tasks = counts.get("completed", 0)
+        scored = int(score_counts.get("scored") or 0)
+        failed = counts.get("failed", 0) + max(completed_tasks - scored, 0)
+        processed = completed_tasks + counts.get("failed", 0) + counts.get("cancelled", 0)
         total = int(row["total"] or 0)
         return {
             "id": row["id"],
             "status": row["status"],
             "total": total,
-            "completed": counts.get("completed", 0),
-            "failed": counts.get("failed", 0),
+            "completed": scored,
+            "failed": failed,
             "cancelled": counts.get("cancelled", 0),
             "remaining": counts.get("queued", 0) + counts.get("running", 0),
             "processed": processed,

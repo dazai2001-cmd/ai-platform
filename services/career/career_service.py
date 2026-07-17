@@ -13,7 +13,7 @@ _UNTRUSTED_INPUT_INSTRUCTION = (
 )
 
 _DEGRADED_WARNING = (
-    "AI providers are temporarily unavailable. This is a basic local fallback; "
+    "The AI provider was unavailable or returned unusable output. This is a basic local fallback; "
     "review and personalize it before use."
 )
 
@@ -43,6 +43,10 @@ class CareerService:
             max_tokens=900,
             result_key="analysis",
             fallback=lambda: self._fallback_analysis(cv_text, job_description),
+            validator=lambda value: (
+                isinstance(value.get("fit_score"), (int, float))
+                and not isinstance(value.get("fit_score"), bool)
+            ),
         )
         result["model"] = selected_model
         return result
@@ -57,6 +61,7 @@ class CareerService:
             max_tokens=1100,
             result_key="tailored_cv",
             fallback=lambda: self._fallback_tailored_cv(cv_text, job_description),
+            validator=lambda value: isinstance(value.get("tailored_bullets"), list),
         )
         result["model"] = selected_model
         return result
@@ -71,6 +76,7 @@ class CareerService:
             max_tokens=700,
             result_key="cover_letter",
             fallback=lambda: self._fallback_cover_letter(cv_text, job_description),
+            validator=lambda value: isinstance(value.get("cover_letter"), str) and bool(value["cover_letter"].strip()),
         )
         result["model"] = selected_model
         return result
@@ -84,6 +90,10 @@ class CareerService:
             max_tokens=750,
             result_key="application_pack",
             fallback=lambda: self._fallback_application_pack(cv_text, job_description),
+            validator=lambda value: all(
+                isinstance(value.get(key), dict)
+                for key in ("analysis", "tailored_cv", "cover_letter")
+            ),
         )
         pack["model"] = selected_model
         pack["automation_note"] = (
@@ -110,6 +120,10 @@ class CareerService:
                 "tailored_cv": self._fallback_tailored_cv(cv_text, job_description),
                 "cover_letter": self._fallback_cover_letter(cv_text, job_description),
             },
+            validator=lambda value: all(
+                isinstance(value.get(key), dict)
+                for key in ("tailored_cv", "cover_letter")
+            ),
         )
         pack = {
             "analysis": analysis,
@@ -132,6 +146,7 @@ class CareerService:
         max_tokens: int,
         result_key: str,
         fallback: Callable[[], dict[str, Any]],
+        validator: Callable[[dict[str, Any]], bool],
     ) -> dict[str, Any]:
         try:
             raw = ollama.generate(
@@ -142,11 +157,16 @@ class CareerService:
                 json_format=True,
             )
         except RuntimeError:
-            result = fallback()
-            result["warning"] = _DEGRADED_WARNING
-            result["degraded"] = True
-            return result
-        return self._json_or_fallback(raw, result_key)
+            return self._degraded_result(fallback)
+        result = self._json_or_fallback(raw, result_key)
+        return result if validator(result) else self._degraded_result(fallback)
+
+    @staticmethod
+    def _degraded_result(fallback: Callable[[], dict[str, Any]]) -> dict[str, Any]:
+        result = fallback()
+        result["warning"] = _DEGRADED_WARNING
+        result["degraded"] = True
+        return result
 
     def _fallback_analysis(self, cv_text: str, job_description: str) -> dict[str, Any]:
         job_keywords = self._keywords(job_description, limit=16)

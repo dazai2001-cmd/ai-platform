@@ -18,6 +18,7 @@ from domain.bi.pipeline import BIPipeline, _PROMPT
 from domain.router.router import QueryRouter
 from core.config.settings import settings
 from services.career.career_service import CareerService
+from services.career.job_search_service import CareerJobService
 from services.auth.auth_service import AuthError, auth_service
 from services.chat.conversation_service import conversations
 from services.memory.memory_service import memory
@@ -194,6 +195,45 @@ class ModelRoutingTests(unittest.TestCase):
             service._json_or_fallback('{"cover_letter":{"cover_letter":"Hello"}}', "cover_letter"),
             {"cover_letter": "Hello"},
         )
+
+    def test_career_invalid_provider_schema_uses_local_fallback(self):
+        service = CareerService()
+        with patch(
+            "services.career.career_service.ollama.generate",
+            return_value='{"summary":"missing numeric score"}',
+        ):
+            result = service.analyze_fit("Python engineer", "Python engineer")
+
+        self.assertTrue(result["degraded"])
+        self.assertIsInstance(result["fit_score"], int)
+
+    def test_score_batch_counts_only_numeric_job_scores_as_completed(self):
+        service = CareerJobService()
+        row = {
+            "id": "batch-1",
+            "status": "completed",
+            "total": 10,
+            "created_at": 1,
+            "updated_at": 2,
+        }
+        with (
+            patch(
+                "services.career.job_search_service.db.query",
+                return_value=[
+                    {"status": "completed", "count": 5},
+                    {"status": "failed", "count": 5},
+                ],
+            ),
+            patch(
+                "services.career.job_search_service.db.query_one",
+                side_effect=[{"scored": 1}, None],
+            ),
+        ):
+            result = service._score_batch_payload(row)
+
+        self.assertEqual(result["processed"], 10)
+        self.assertEqual(result["completed"], 1)
+        self.assertEqual(result["failed"], 9)
 
 
 class CloudProviderTests(unittest.TestCase):
