@@ -46,6 +46,7 @@ class Settings:
     LLM_MAX_TOKENS = int(os.getenv("LLM_MAX_TOKENS", "768"))
 
     # Cloud LLM providers
+    CLOUD_LLM_TIMEOUT_SECONDS = int(os.getenv("CLOUD_LLM_TIMEOUT_SECONDS", "45"))
     GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "").strip()
     GEMINI_BASE_URL = os.getenv("GEMINI_BASE_URL", "https://generativelanguage.googleapis.com/v1beta").rstrip("/")
     GEMINI_MODELS = [

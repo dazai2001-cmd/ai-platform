@@ -178,7 +178,7 @@ class OllamaClient:
                     f"{settings.GEMINI_BASE_URL}/models/{model}:generateContent",
                     headers={"x-goog-api-key": settings.GEMINI_API_KEY},
                     json=payload,
-                    timeout=settings.OLLAMA_TIMEOUT_SECONDS,
+                    timeout=settings.CLOUD_LLM_TIMEOUT_SECONDS,
                 )
                 r.raise_for_status()
                 answer = self._gemini_answer_text(r.json())
@@ -234,7 +234,7 @@ class OllamaClient:
             "X-Title": "AI Platform",
         }
         enforce_json = json_format
-        for attempt in range(3):
+        for attempt in range(2):
             request_payload = dict(payload)
             if enforce_json:
                 request_payload["response_format"] = {"type": "json_object"}
@@ -243,20 +243,41 @@ class OllamaClient:
                     f"{settings.OPENROUTER_BASE_URL}/chat/completions",
                     json=request_payload,
                     headers=headers,
-                    timeout=settings.OLLAMA_TIMEOUT_SECONDS,
+                    timeout=settings.CLOUD_LLM_TIMEOUT_SECONDS,
                 )
                 r.raise_for_status()
-                return r.json()["choices"][0]["message"]["content"].strip()
+                answer = self._openrouter_answer_text(r.json())
+                if answer:
+                    return answer
+                if attempt < 1:
+                    continue
+                raise RuntimeError("OpenRouter returned no user-facing answer.")
             except requests.exceptions.RequestException as e:
                 status = getattr(getattr(e, "response", None), "status_code", None)
-                if attempt < 2 and enforce_json and status == 400:
+                if attempt < 1 and enforce_json and status == 400:
                     enforce_json = False
                     continue
-                if attempt < 2 and (status is None or status == 429 or status >= 500):
+                if attempt < 1 and (status is None or status == 429 or status >= 500):
                     continue
                 raise RuntimeError(self._safe_provider_error("OpenRouter", e)) from e
 
         raise RuntimeError("OpenRouter request failed.")
+
+    @staticmethod
+    def _openrouter_answer_text(data: dict) -> str:
+        choices = data.get("choices") if isinstance(data, dict) else None
+        first = choices[0] if isinstance(choices, list) and choices else {}
+        message = first.get("message") if isinstance(first, dict) else {}
+        content = message.get("content") if isinstance(message, dict) else None
+        if isinstance(content, str):
+            return content.strip()
+        if isinstance(content, list):
+            return "".join(
+                str(part.get("text") or "")
+                for part in content
+                if isinstance(part, dict)
+            ).strip()
+        return ""
 
     def _can_fallback_to_openrouter(self, error: RuntimeError) -> bool:
         if not settings.OPENROUTER_API_KEY or not settings.OPENROUTER_MODELS:

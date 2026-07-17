@@ -153,6 +153,36 @@ class ModelRoutingTests(unittest.TestCase):
         self.assertEqual(generate.call_count, 3)
         self.assertTrue(all(call.kwargs["json_format"] for call in generate.call_args_list))
 
+    def test_career_provider_failure_returns_local_fallbacks(self):
+        service = CareerService()
+        cv_text = "Python engineer with Flask, PostgreSQL, React, Docker, and CI/CD experience."
+        job_description = "Python engineer using Flask, PostgreSQL, React, Docker, and CI/CD."
+
+        with patch(
+            "services.career.career_service.ollama.generate",
+            side_effect=RuntimeError("provider unavailable"),
+        ):
+            analysis = service.analyze_fit(cv_text, job_description)
+            tailored = service.tailor_cv(cv_text, job_description)
+            cover = service.draft_cover_letter(cv_text, job_description)
+            pack = service.application_pack(cv_text, job_description)
+            match_pack = service.application_pack_for_match(
+                cv_text,
+                job_description,
+                analysis,
+            )
+
+        self.assertTrue(analysis["degraded"])
+        self.assertGreaterEqual(analysis["fit_score"], 70)
+        self.assertTrue(tailored["degraded"])
+        self.assertTrue(tailored["tailored_bullets"])
+        self.assertTrue(cover["degraded"])
+        self.assertIn("Dear Hiring Team", cover["cover_letter"])
+        self.assertTrue(pack["degraded"])
+        self.assertIn("analysis", pack)
+        self.assertTrue(match_pack["degraded"])
+        self.assertIn("cover_letter", match_pack)
+
 
 class CloudProviderTests(unittest.TestCase):
     def test_settings_import_in_cloud_runtime(self):
@@ -291,6 +321,50 @@ class CloudProviderTests(unittest.TestCase):
 
         self.assertEqual(answer, "retry ok")
         self.assertEqual(post.call_count, 2)
+
+    def test_openrouter_retries_empty_content(self):
+        class Response:
+            def __init__(self, content):
+                self.content = content
+
+            def raise_for_status(self):
+                return None
+
+            def json(self):
+                return {"choices": [{"message": {"content": self.content}}]}
+
+        with (
+            patch.object(settings, "OPENROUTER_API_KEY", "test-key"),
+            patch.object(settings, "OPENROUTER_MODELS", ["openrouter/free"]),
+            patch(
+                "infrastructure.llm.ollama_client.requests.post",
+                side_effect=[Response(None), Response("retry ok")],
+            ) as post,
+        ):
+            answer = ollama.generate("openrouter:openrouter/free", "hello")
+
+        self.assertEqual(answer, "retry ok")
+        self.assertEqual(post.call_count, 2)
+
+    def test_openrouter_does_not_retry_payment_required(self):
+        class PaymentRequiredResponse:
+            status_code = 402
+
+            def raise_for_status(self):
+                raise requests.exceptions.HTTPError(response=self)
+
+        with (
+            patch.object(settings, "OPENROUTER_API_KEY", "test-key"),
+            patch.object(settings, "OPENROUTER_MODELS", ["openrouter/free"]),
+            patch(
+                "infrastructure.llm.ollama_client.requests.post",
+                return_value=PaymentRequiredResponse(),
+            ) as post,
+        ):
+            with self.assertRaisesRegex(RuntimeError, r"OpenRouter request failed \(402\)"):
+                ollama.generate("openrouter:openrouter/free", "hello")
+
+        self.assertEqual(post.call_count, 1)
 
     def test_gemini_rate_limit_falls_back_to_openrouter(self):
         class RateLimitResponse:
