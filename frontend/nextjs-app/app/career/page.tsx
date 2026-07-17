@@ -902,7 +902,7 @@ export default function CareerPage() {
               </div>
             </div>
 
-            {scoreBatch && (
+            {scoreBatch && scoreBatch.total > 0 && (
               <div
                 className={`mb-4 rounded-md border p-3 ${
                   scoreBatch.failed

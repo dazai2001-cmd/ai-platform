@@ -158,4 +158,24 @@ describe("CareerPage tracker behavior", () => {
     expect(apiMocks.updateCareerProfile).not.toHaveBeenCalled();
     expect(apiMocks.deleteCareerProfile).not.toHaveBeenCalled();
   });
+
+  it("hides an empty completed scoring batch", async () => {
+    apiMocks.currentCareerScoreBatch.mockResolvedValue({
+      id: "batch-empty",
+      status: "completed",
+      total: 0,
+      completed: 0,
+      failed: 0,
+      cancelled: 0,
+      remaining: 0,
+      processed: 0,
+      progress: 100,
+      current_job: null,
+    });
+
+    render(<CareerPage />);
+
+    await screen.findByText("test-model");
+    expect(screen.queryByText("Background scoring complete")).not.toBeInTheDocument();
+  });
 });
