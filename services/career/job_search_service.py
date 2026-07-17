@@ -201,7 +201,7 @@ class CareerJobService:
     def delete_job(self, job_id: str, user_id: str = "local"):
         if not self.get_job(job_id, user_id=user_id):
             return
-        batch_ids = self._queued_score_batch_ids(job_id)
+        batch_ids = self._score_batch_ids_for_job(job_id)
         now = time.time()
         db.execute_many([
             (
@@ -729,6 +729,16 @@ class CareerJobService:
             )
         ]
 
+    @staticmethod
+    def _score_batch_ids_for_job(job_id: str) -> list[str]:
+        return [
+            row["batch_id"]
+            for row in db.query(
+                "SELECT DISTINCT batch_id FROM career_score_tasks WHERE job_id = ?",
+                (job_id,),
+            )
+        ]
+
     def _refresh_active_score_batches(self):
         for row in db.query(
             "SELECT id FROM career_score_batches WHERE status IN ('queued', 'running')"
@@ -768,7 +778,9 @@ class CareerJobService:
         scored = int(score_counts.get("scored") or 0)
         failed = counts.get("failed", 0) + max(completed_tasks - scored, 0)
         processed = completed_tasks + counts.get("failed", 0) + counts.get("cancelled", 0)
-        total = int(row["total"] or 0)
+        # Task rows are authoritative. A job deletion can cascade completed
+        # tasks after the batch has finished, making the stored total stale.
+        total = sum(int(count or 0) for count in counts.values())
         return {
             "id": row["id"],
             "status": row["status"],

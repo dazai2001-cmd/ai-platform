@@ -123,6 +123,43 @@ def test_deleting_a_queued_job_completes_its_batch():
     assert batch == {"status": "completed", "total": 0}
 
 
+def test_deleting_a_scored_job_refreshes_its_completed_batch():
+    service = CareerJobService()
+    _insert_queued_job_and_batch()
+    db.execute(
+        "UPDATE career_jobs SET status = 'scored', fit_score = 80 WHERE id = 'job-1'"
+    )
+    db.execute(
+        "UPDATE career_score_tasks SET status = 'completed' WHERE batch_id = 'batch-1'"
+    )
+    db.execute(
+        "UPDATE career_score_batches SET status = 'completed', completed = 1 WHERE id = 'batch-1'"
+    )
+
+    service.delete_job("job-1", user_id="user-1")
+
+    batch = db.query_one(
+        "SELECT status, total, completed FROM career_score_batches WHERE id = 'batch-1'"
+    )
+    assert batch == {"status": "completed", "total": 0, "completed": 0}
+
+
+def test_batch_payload_uses_task_rows_when_stored_total_is_stale():
+    service = CareerJobService()
+    _insert_queued_job_and_batch()
+    db.execute("DELETE FROM career_score_tasks WHERE batch_id = 'batch-1'")
+    db.execute(
+        "UPDATE career_score_batches SET status = 'completed', total = 2 WHERE id = 'batch-1'"
+    )
+    row = db.query_one("SELECT * FROM career_score_batches WHERE id = 'batch-1'")
+
+    payload = service._score_batch_payload(row)
+
+    assert payload["total"] == 0
+    assert payload["processed"] == 0
+    assert payload["progress"] == 100
+
+
 def test_skipping_a_queued_job_cancels_task_and_completes_batch():
     service = CareerJobService()
     _insert_queued_job_and_batch()
