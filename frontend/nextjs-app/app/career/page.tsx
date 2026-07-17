@@ -36,7 +36,7 @@ type CareerJob = {
   status: string;
   fit_score?: number | null;
   decision?: string;
-  analysis?: any;
+  analysis?: CareerAnalysis | null;
   applied_at?: number | null;
   created_at?: number;
   updated_at?: number;
@@ -57,6 +57,9 @@ type CareerAnalysis = {
   summary?: string;
   matched_skills?: string[];
   missing_or_weak_signals?: string[];
+  risks?: string[];
+  warning?: string;
+  degraded?: boolean;
 };
 
 type CareerTab = "found" | "matches" | "saved" | "applied" | "skipped";
@@ -126,36 +129,61 @@ export default function CareerPage() {
 
   useEffect(() => {
     let cancelled = false;
-    Promise.all([
+    void Promise.allSettled([
       api.modelSettings(),
       api.careerPreferences(),
       api.careerProfile(),
       api.careerJobs(),
       api.currentCareerScoreBatch(),
-    ])
-      .then(([settings, prefs, profile, savedJobs, currentBatch]) => {
-        const localPrefs = readLocalCareerPreferences();
-        if (!cancelled) setCareerModel(settings.task_models?.career || "");
-        if (!cancelled) setPreferences({ ...defaultPreferences, ...(prefs || {}), ...localPrefs });
-        if (!cancelled) {
-          lastSyncedCvRef.current = profile?.cv_text || "";
-          setCvText(profile?.cv_text || readLocalCareerProfile());
-        }
-        if (!cancelled) setJobs(savedJobs || []);
-        if (!cancelled) setScoreBatch(currentBatch || null);
-        if (!cancelled) setPreferencesReady(true);
-        if (!cancelled) setProfileReady(true);
-      })
-      .catch(() => {
-        if (!cancelled) setCareerModel("");
-        if (!cancelled) {
-          lastSyncedCvRef.current = null;
-          setPreferences({ ...defaultPreferences, ...readLocalCareerPreferences() });
-          setCvText(readLocalCareerProfile());
-          setPreferencesReady(true);
-          setProfileReady(true);
-        }
-      });
+    ]).then(([settingsResult, preferencesResult, profileResult, jobsResult, batchResult]) => {
+      if (cancelled) return;
+
+      const failedSections: string[] = [];
+
+      if (settingsResult.status === "fulfilled") {
+        setCareerModel(settingsResult.value?.task_models?.career || "");
+      } else {
+        setCareerModel("");
+        failedSections.push("model settings");
+      }
+
+      if (preferencesResult.status === "fulfilled") {
+        setPreferences({ ...defaultPreferences, ...(preferencesResult.value || {}) });
+      } else {
+        setPreferences({ ...defaultPreferences, ...readLocalCareerPreferences() });
+        failedSections.push("search criteria");
+      }
+      setPreferencesReady(true);
+
+      if (profileResult.status === "fulfilled") {
+        const serverProfile = profileResult.value?.cv_text || "";
+        lastSyncedCvRef.current = serverProfile;
+        setCvText(serverProfile);
+      } else {
+        // Never restore an unverified local copy after a failed server read. Doing
+        // so would make the autosave effect overwrite or resurrect the cloud CV.
+        lastSyncedCvRef.current = "";
+        setCvText("");
+        failedSections.push("CV/profile");
+      }
+      setProfileReady(true);
+
+      if (jobsResult.status === "fulfilled") {
+        setJobs(jobsResult.value || []);
+      } else {
+        failedSections.push("job tracker");
+      }
+
+      if (batchResult.status === "fulfilled") {
+        setScoreBatch(batchResult.value || null);
+      } else {
+        failedSections.push("scoring progress");
+      }
+
+      if (failedSections.length) {
+        setError(`Could not load ${failedSections.join(", ")}. The other Career data is still available; refresh to retry.`);
+      }
+    });
     return () => {
       cancelled = true;
     };
@@ -370,7 +398,7 @@ export default function CareerPage() {
       setJobs((current) => [job, ...current]);
       setJobDescription(job.description);
       setJobUrl("");
-      setActiveTab(job.status === "saved" ? "saved" : "matches");
+      setActiveTab(primaryTabForJob(job));
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to import job URL");
     } finally {
@@ -390,7 +418,7 @@ export default function CareerPage() {
         source: "manual",
       });
       setJobs((current) => [job, ...current]);
-      setActiveTab(job.status === "saved" ? "saved" : "matches");
+      setActiveTab(primaryTabForJob(job));
       setNotice("Job saved to the tracker.");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to save job");
@@ -1000,6 +1028,14 @@ export default function CareerPage() {
                             Unscored
                           </span>
                         )}
+                        {job.analysis?.degraded && (
+                          <span
+                            title={job.analysis.warning || "The AI provider was unavailable, so this score uses a basic local comparison."}
+                            className="rounded-md border border-warning/30 bg-warning/10 px-2 py-1 text-xs font-semibold text-warning-ink"
+                          >
+                            Local fallback
+                          </span>
+                        )}
                         {activeTab === "matches" && jobWorkMode(job) !== "unknown" && (
                           <span className="rounded-md border border-line px-2 py-1 text-xs text-muted">
                             {workModeLabel(jobWorkMode(job))}
@@ -1011,7 +1047,7 @@ export default function CareerPage() {
                           </span>
                         )}
                         <span className="rounded-md border border-line px-2 py-1 text-xs text-muted">
-                          {statusLabel(job.status)}
+                          {jobStatusLabel(job, activeTab)}
                         </span>
                       </div>
                     </div>
@@ -1234,11 +1270,6 @@ function readLocalCareerPreferences(): Record<string, string> {
   }
 }
 
-function readLocalCareerProfile(): string {
-  if (typeof window === "undefined") return "";
-  return window.localStorage.getItem("career-profile") || "";
-}
-
 function matchModeLabel(mode: string): string {
   const labels: Record<string, string> = {
     both: "profile + criteria",
@@ -1277,15 +1308,28 @@ function formatRawCareerResult(result: any): string {
 }
 
 function jobBelongsToTab(job: CareerJob, tab: CareerTab): boolean {
+  if (tab === "applied") return job.status === "applied";
+  if (tab === "skipped") return job.status === "skipped";
+  if (tab === "saved") {
+    if (job.status === "saved") return true;
+    return !isSearchJob(job)
+      && ["scored", "opened"].includes(job.status)
+      && (typeof job.fit_score !== "number" || job.fit_score < MIN_MATCH_SCORE);
+  }
   if (tab === "found") {
     return isSearchJob(job)
       && ["found", "scored", "opened"].includes(job.status)
       && (typeof job.fit_score !== "number" || job.fit_score < MIN_MATCH_SCORE);
   }
-  if (tab === "applied") return job.status === "applied";
-  if (tab === "skipped") return job.status === "skipped";
-  if (tab === "saved") return job.status === "saved";
   return ["scored", "opened"].includes(job.status) && typeof job.fit_score === "number" && job.fit_score >= MIN_MATCH_SCORE;
+}
+
+function primaryTabForJob(job: CareerJob): CareerTab {
+  if (jobBelongsToTab(job, "applied")) return "applied";
+  if (jobBelongsToTab(job, "skipped")) return "skipped";
+  if (jobBelongsToTab(job, "saved")) return "saved";
+  if (jobBelongsToTab(job, "found")) return "found";
+  return "matches";
 }
 
 function isSearchJob(job: CareerJob): boolean {
@@ -1312,6 +1356,11 @@ function statusLabel(status: string): string {
     skipped: "Skipped",
   };
   return labels[status] || status;
+}
+
+function jobStatusLabel(job: CareerJob, tab: CareerTab): string {
+  if (tab === "saved" && job.status !== "saved" && jobBelongsToTab(job, "saved")) return "Saved";
+  return statusLabel(job.status);
 }
 
 function jobWorkMode(job: CareerJob): WorkModeFilter | "unknown" {
@@ -1346,10 +1395,18 @@ function JobMatchDetails({ analysis }: { analysis?: CareerAnalysis | null }) {
   if (!analysis) return null;
   const matched = normalizeStringArray(analysis.matched_skills);
   const missing = normalizeStringArray(analysis.missing_or_weak_signals);
-  if (!analysis.summary && !matched.length && !missing.length) return null;
+  const risks = normalizeStringArray(analysis.risks);
+  const warning = analysis.warning
+    || (analysis.degraded ? "The AI provider was unavailable, so this is a basic local fallback score. Review it manually before applying." : "");
+  if (!analysis.summary && !matched.length && !missing.length && !risks.length && !warning) return null;
 
   return (
     <div className="mb-3 border-t border-line-soft/80 pt-3">
+      {warning && (
+        <div className="mb-3 rounded-md border border-warning/30 bg-warning/10 p-2.5 text-xs leading-5 text-warning-ink">
+          <span className="font-semibold">Local fallback:</span> {warning}
+        </div>
+      )}
       {analysis.summary && (
         <div className="mb-4">
           <div className="mb-1 text-xs font-semibold uppercase tracking-wide text-muted">Score reasoning</div>
@@ -1359,6 +1416,7 @@ function JobMatchDetails({ analysis }: { analysis?: CareerAnalysis | null }) {
       <div className="grid gap-4 md:grid-cols-2">
         <SignalList title="Matched skills" items={matched} tone="positive" />
         <SignalList title="Missing or weak" items={missing} tone="warning" />
+        <SignalList title="Risks" items={risks} tone="warning" />
       </div>
     </div>
   );

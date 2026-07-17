@@ -201,14 +201,18 @@ class CareerJobService:
     def delete_job(self, job_id: str, user_id: str = "local"):
         if not self.get_job(job_id, user_id=user_id):
             return
+        batch_ids = self._queued_score_batch_ids(job_id)
+        now = time.time()
         db.execute_many([
             (
                 "UPDATE career_score_tasks SET status = 'cancelled', updated_at = ? "
                 "WHERE job_id = ? AND status = 'queued'",
-                (time.time(), job_id),
+                (now, job_id),
             ),
             ("DELETE FROM career_jobs WHERE id = ? AND user_id = ?", (job_id, user_id)),
         ])
+        for batch_id in batch_ids:
+            self._refresh_score_batch(batch_id)
 
     def search_jobs(
         self,
@@ -269,7 +273,9 @@ class CareerJobService:
             "scored_count": 0,
             "min_match_score": MIN_MATCH_SCORE,
             "rejected_low_score": 0,
-            "will_score": preferences.get("match_mode") != "criteria" and bool(cv_text.strip()),
+            # Search only discovers jobs. Scoring is deliberately queued through
+            # the separate batch action so cloud quotas and progress stay clear.
+            "will_score": False,
             "errors": errors[:3],
         }
 
@@ -289,8 +295,6 @@ class CareerJobService:
         )
         self.remove_duplicates(user_id=user_id)
         existing_keys = self._existing_identity_keys(user_id=user_id)
-        should_score_jobs = preferences.get("match_mode") != "criteria" and bool(cv_text.strip())
-
         yield {
             "event": "started",
             "query": query,
@@ -298,7 +302,7 @@ class CareerJobService:
             "searched_sources": searched_sources,
             "skipped_sources": skipped_sources,
             "min_match_score": MIN_MATCH_SCORE,
-            "will_score": should_score_jobs,
+            "will_score": False,
         }
 
         saved_count = 0
@@ -376,6 +380,7 @@ class CareerJobService:
             (status, applied_at, now, job_id, user_id),
         )
         if status in {"applied", "skipped"}:
+            batch_ids = self._queued_score_batch_ids(job_id)
             db.execute(
                 """
                 UPDATE career_score_tasks
@@ -384,6 +389,8 @@ class CareerJobService:
                 """,
                 (now, job_id),
             )
+            for batch_id in batch_ids:
+                self._refresh_score_batch(batch_id)
         return self.get_job(job_id, user_id=user_id)
 
     def import_url(self, url: str, cv_text: str = "", user_id: str = "local") -> dict[str, Any]:
@@ -596,6 +603,7 @@ class CareerJobService:
                     (now,),
                 ),
             ])
+            self._refresh_active_score_batches()
             self._score_worker = threading.Thread(
                 target=self._score_worker_loop,
                 name="career-score-worker",
@@ -709,6 +717,23 @@ class CareerJobService:
             """,
             (status, total, completed, failed, time.time(), batch_id),
         )
+
+    @staticmethod
+    def _queued_score_batch_ids(job_id: str) -> list[str]:
+        return [
+            row["batch_id"]
+            for row in db.query(
+                "SELECT DISTINCT batch_id FROM career_score_tasks "
+                "WHERE job_id = ? AND status = 'queued'",
+                (job_id,),
+            )
+        ]
+
+    def _refresh_active_score_batches(self):
+        for row in db.query(
+            "SELECT id FROM career_score_batches WHERE status IN ('queued', 'running')"
+        ):
+            self._refresh_score_batch(row["id"])
 
     def _score_batch_payload(self, row: dict[str, Any]) -> dict[str, Any]:
         counts = {
@@ -1032,7 +1057,7 @@ class CareerJobService:
         elif mode == "criteria":
             query = criteria_query
         else:
-            query = criteria_query or profile_query
+            query = " ".join(part for part in (criteria_query, profile_query) if part)
         return query or "AI engineer"
 
     @staticmethod
@@ -1075,7 +1100,50 @@ class CareerJobService:
             locations = CareerJobService._split_preference_terms(preferences.get("locations", ""))
             if locations and not any(CareerJobService._location_matches(location_text, location) for location in locations):
                 return False
+
+            must_have = CareerJobService._split_preference_terms(preferences.get("must_have", ""))
+            if must_have and not all(CareerJobService._contains_preference_term(haystack, term) for term in must_have):
+                return False
+
+            requested_mode = preferences.get("remote", "any")
+            if requested_mode != "any" and CareerJobService._candidate_work_mode(candidate) != requested_mode:
+                return False
         return True
+
+    @staticmethod
+    def _candidate_work_mode(candidate: dict[str, str]) -> str:
+        location = candidate.get("location", "").strip().lower()
+        text = " ".join([
+            candidate.get("title", ""),
+            location,
+            candidate.get("description", ""),
+        ]).lower()
+        if re.search(r"\b(hybrid|partly remote|partial remote|flexible location)\b", text):
+            return "hybrid"
+        remote_is_negated = re.search(
+            r"\b(?:no|not)\s+(?:fully\s+)?remote\b|\bremote (?:work|working) (?:is )?not available\b",
+            text,
+        )
+        if not remote_is_negated and re.search(
+            r"\b(remote|work from home|home[- ]based|distributed|worldwide|anywhere)\b",
+            text,
+        ):
+            return "remote"
+        if location or re.search(r"\b(on[- ]site|in[- ]office|office[- ]based)\b", text):
+            return "onsite"
+        return "unknown"
+
+    @staticmethod
+    def _contains_preference_term(text: str, term: str) -> bool:
+        term = term.strip().lower()
+        if not term:
+            return True
+        pattern = re.escape(term).replace(r"\ ", r"\s+")
+        if term[0].isalnum():
+            pattern = rf"(?<![a-z0-9]){pattern}"
+        if term[-1].isalnum():
+            pattern = rf"{pattern}(?![a-z0-9])"
+        return re.search(pattern, text.lower()) is not None
 
     @staticmethod
     def _split_preference_terms(value: str) -> list[str]:

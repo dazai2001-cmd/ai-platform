@@ -207,6 +207,109 @@ class ModelRoutingTests(unittest.TestCase):
         self.assertTrue(result["degraded"])
         self.assertIsInstance(result["fit_score"], int)
 
+    def test_career_invalid_provider_scores_use_local_fallback(self):
+        service = CareerService()
+        invalid_scores = ("-1", "101", "NaN", "Infinity", "-Infinity", "true")
+
+        for score in invalid_scores:
+            with self.subTest(score=score), patch(
+                "services.career.career_service.ollama.generate",
+                return_value=f'{{"fit_score":{score}}}',
+            ):
+                result = service.analyze_fit("Python engineer", "Python engineer")
+
+            self.assertTrue(result["degraded"])
+            self.assertGreaterEqual(result["fit_score"], 0)
+            self.assertLessEqual(result["fit_score"], 100)
+
+    def test_career_application_pack_rejects_invalid_nested_score(self):
+        service = CareerService()
+        with patch(
+            "services.career.career_service.ollama.generate",
+            return_value=(
+                '{"analysis":{"fit_score":101},'
+                '"tailored_cv":{},"cover_letter":{}}'
+            ),
+        ):
+            result = service.application_pack("Python engineer", "Python engineer")
+
+        self.assertTrue(result["degraded"])
+        self.assertLessEqual(result["analysis"]["fit_score"], 100)
+
+    def test_career_fallback_filters_filler_keywords(self):
+        service = CareerService()
+        cv_text = (
+            "Software engineer requiring five years of Python experience; "
+            "required tools include Flask."
+        )
+        job_description = (
+            "Software engineer requires five years of Python experience; "
+            "requiring Flask."
+        )
+
+        analysis = service._fallback_analysis(cv_text, job_description)
+        cover = service._fallback_cover_letter(cv_text, job_description)
+
+        filler = {"of", "five", "require", "required", "requires", "requiring"}
+        self.assertTrue(filler.isdisjoint(analysis["matched_skills"]))
+        self.assertEqual(
+            service._matched_keywords(cv_text, job_description),
+            ["software", "engineer", "python", "flask"],
+        )
+        self.assertIn(
+            "role's emphasis on software, engineer, python, flask.",
+            cover["cover_letter"],
+        )
+
+    def test_career_overlong_provider_cover_letter_uses_local_fallback(self):
+        service = CareerService()
+        overlong = "word " * 301
+        with patch(
+            "services.career.career_service.ollama.generate",
+            return_value=f'{{"cover_letter":"{overlong}"}}',
+        ):
+            result = service.draft_cover_letter("Python engineer", "Python role")
+
+        self.assertTrue(result["degraded"])
+        self.assertIn("basic local fallback", result["warning"])
+        self.assertLessEqual(len(result["cover_letter"].split()), 300)
+
+    def test_career_application_pack_rejects_overlong_nested_cover_letter(self):
+        service = CareerService()
+        overlong = "word " * 301
+        with patch(
+            "services.career.career_service.ollama.generate",
+            return_value=(
+                '{"analysis":{"fit_score":80},"tailored_cv":{},'
+                f'"cover_letter":{{"cover_letter":"{overlong}"}}}}'
+            ),
+        ):
+            result = service.application_pack("Python engineer", "Python role")
+
+        self.assertTrue(result["degraded"])
+        self.assertIn("basic local fallback", result["warning"])
+        self.assertLessEqual(len(result["cover_letter"]["cover_letter"].split()), 300)
+
+    def test_career_match_pack_rejects_overlong_nested_cover_letter(self):
+        service = CareerService()
+        overlong = "word " * 301
+        with patch(
+            "services.career.career_service.ollama.generate",
+            return_value=(
+                '{"tailored_cv":{},'
+                f'"cover_letter":{{"cover_letter":"{overlong}"}}}}'
+            ),
+        ):
+            result = service.application_pack_for_match(
+                "Python engineer",
+                "Python role",
+                {"fit_score": 80},
+            )
+
+        self.assertTrue(result["degraded"])
+        self.assertIn("basic local fallback", result["warning"])
+        self.assertLessEqual(len(result["cover_letter"]["cover_letter"].split()), 300)
+
     def test_score_batch_counts_only_numeric_job_scores_as_completed(self):
         service = CareerJobService()
         row = {

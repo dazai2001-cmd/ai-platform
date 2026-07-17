@@ -1,4 +1,5 @@
 import json
+import math
 import re
 from typing import Any, Callable
 
@@ -17,11 +18,20 @@ _DEGRADED_WARNING = (
     "review and personalize it before use."
 )
 
+_MAX_COVER_LETTER_WORDS = 300
+
 _KEYWORD_STOPWORDS = {
-    "about", "after", "also", "and", "are", "but", "candidate", "company",
-    "experience", "for", "from", "have", "into", "job", "looking", "more",
-    "our", "role", "skills", "that", "the", "their", "they", "this", "using",
-    "with", "work", "years", "you", "your",
+    "about", "after", "all", "also", "and", "any", "are", "as", "at", "be",
+    "been", "being", "but", "by", "can", "candidate", "company", "could", "do",
+    "does", "during", "each", "eight", "experience", "five", "for", "four",
+    "from", "have", "how", "if", "in", "into", "is", "it", "its", "job",
+    "looking", "may", "more", "must", "nine", "not", "of", "on", "one", "or",
+    "other", "our", "required", "require", "requires", "requiring", "role",
+    "seven", "should", "six", "skills", "such", "ten", "than", "that", "the",
+    "their", "then", "there", "these", "they", "this", "those", "three",
+    "through", "to", "two", "up", "using", "was", "we", "were", "what", "when",
+    "where", "which", "who", "will", "with", "work", "would", "years", "you",
+    "your",
 }
 
 
@@ -43,10 +53,7 @@ class CareerService:
             max_tokens=900,
             result_key="analysis",
             fallback=lambda: self._fallback_analysis(cv_text, job_description),
-            validator=lambda value: (
-                isinstance(value.get("fit_score"), (int, float))
-                and not isinstance(value.get("fit_score"), bool)
-            ),
+            validator=self._has_valid_fit_score,
         )
         result["model"] = selected_model
         return result
@@ -76,7 +83,7 @@ class CareerService:
             max_tokens=700,
             result_key="cover_letter",
             fallback=lambda: self._fallback_cover_letter(cv_text, job_description),
-            validator=lambda value: isinstance(value.get("cover_letter"), str) and bool(value["cover_letter"].strip()),
+            validator=self._has_valid_cover_letter,
         )
         result["model"] = selected_model
         return result
@@ -93,7 +100,9 @@ class CareerService:
             validator=lambda value: all(
                 isinstance(value.get(key), dict)
                 for key in ("analysis", "tailored_cv", "cover_letter")
-            ),
+            )
+            and self._has_valid_fit_score(value["analysis"])
+            and self._has_valid_cover_letter(value["cover_letter"]),
         )
         pack["model"] = selected_model
         pack["automation_note"] = (
@@ -123,7 +132,7 @@ class CareerService:
             validator=lambda value: all(
                 isinstance(value.get(key), dict)
                 for key in ("tailored_cv", "cover_letter")
-            ),
+            ) and self._has_valid_cover_letter(value["cover_letter"]),
         )
         pack = {
             "analysis": analysis,
@@ -167,6 +176,25 @@ class CareerService:
         result["warning"] = _DEGRADED_WARNING
         result["degraded"] = True
         return result
+
+    @staticmethod
+    def _has_valid_fit_score(value: dict[str, Any]) -> bool:
+        score = value.get("fit_score")
+        return (
+            isinstance(score, (int, float))
+            and not isinstance(score, bool)
+            and math.isfinite(score)
+            and 0 <= score <= 100
+        )
+
+    @staticmethod
+    def _has_valid_cover_letter(value: dict[str, Any]) -> bool:
+        cover_letter = value.get("cover_letter")
+        return (
+            isinstance(cover_letter, str)
+            and bool(cover_letter.strip())
+            and len(cover_letter.split()) <= _MAX_COVER_LETTER_WORDS
+        )
 
     def _fallback_analysis(self, cv_text: str, job_description: str) -> dict[str, Any]:
         job_keywords = self._keywords(job_description, limit=16)
@@ -236,7 +264,10 @@ class CareerService:
     @staticmethod
     def _keywords(text: str, limit: int) -> list[str]:
         keywords: list[str] = []
-        for token in re.findall(r"[a-z][a-z0-9+#.-]{1,}", str(text or "").lower()):
+        for raw_token in re.findall(r"[a-z][a-z0-9+#.-]{1,}", str(text or "").lower()):
+            token = raw_token.strip(".-")
+            if len(token) < 2:
+                continue
             if token in _KEYWORD_STOPWORDS or token in keywords:
                 continue
             keywords.append(token)
