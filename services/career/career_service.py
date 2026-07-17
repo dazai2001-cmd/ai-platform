@@ -386,7 +386,12 @@ Job description:
 
         try:
             parsed = json.loads(text)
-            return parsed if isinstance(parsed, dict) else {key: parsed}
+            if isinstance(parsed, dict):
+                nested = parsed.get(key)
+                if isinstance(nested, dict):
+                    return nested
+                return parsed
+            return {key: parsed}
         except json.JSONDecodeError:
             return {key: raw, "warning": "Model returned non-JSON output."}
 

@@ -183,6 +183,18 @@ class ModelRoutingTests(unittest.TestCase):
         self.assertTrue(match_pack["degraded"])
         self.assertIn("cover_letter", match_pack)
 
+    def test_career_service_unwraps_provider_schema_wrappers(self):
+        service = CareerService()
+
+        self.assertEqual(
+            service._json_or_fallback('{"tailored_cv":{"headline":"Engineer"}}', "tailored_cv"),
+            {"headline": "Engineer"},
+        )
+        self.assertEqual(
+            service._json_or_fallback('{"cover_letter":{"cover_letter":"Hello"}}', "cover_letter"),
+            {"cover_letter": "Hello"},
+        )
+
 
 class CloudProviderTests(unittest.TestCase):
     def test_settings_import_in_cloud_runtime(self):

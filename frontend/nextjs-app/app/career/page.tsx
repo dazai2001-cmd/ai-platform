@@ -218,6 +218,17 @@ export default function CareerPage() {
         if (!cancelled) {
           setScoreBatch(batch);
           setJobs(refreshedJobs || []);
+          if (batch.status === "completed") {
+            const remaining = (refreshedJobs || []).filter(
+              (job: CareerJob) => jobBelongsToTab(job, "found") && typeof job.fit_score !== "number",
+            ).length;
+            const failed = batch.failed ? ` ${batch.failed} failed and can be retried.` : "";
+            const pending = remaining ? ` ${remaining} Found jobs are still unscored.` : "";
+            setNotice(
+              `Scoring finished: ${batch.completed} received scores.${failed}${pending} `
+              + `Scores of ${MIN_MATCH_SCORE}+ are shown in Matches; lower scores stay in Found.`,
+            );
+          }
         }
       } catch (err) {
         if (!cancelled) setError(err instanceof Error ? err.message : "Failed to refresh scoring progress");
@@ -423,7 +434,11 @@ export default function CareerPage() {
     try {
       const batch = await api.startCareerScoreBatch(cvText, jobIds);
       setScoreBatch(batch);
-      setNotice(`${batch.total} unique Found jobs queued. You can leave this page while they score.`);
+      const deferred = Math.max(jobIds.length - batch.total, 0);
+      setNotice(
+        `${batch.total} unique Found jobs queued. You can leave this page while they score.`
+        + (deferred ? ` ${deferred} more will remain for the next batch.` : ""),
+      );
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to start background scoring");
     } finally {
@@ -846,7 +861,7 @@ export default function CareerPage() {
                   {scoreBatchActive ? <Square size={12} /> : <Gauge size={13} />}
                   {scoreBatchActive
                     ? jobAction === "cancel-score-all" ? "Stopping..." : "Stop after current"
-                    : `Score all Found${unscoredFoundJobs.length ? ` (${unscoredFoundJobs.length})` : ""}`}
+                    : `Score unscored${unscoredFoundJobs.length ? ` (${unscoredFoundJobs.length})` : ""}`}
                 </button>
                 <button
                   onClick={clearFoundJobs}
@@ -860,11 +875,20 @@ export default function CareerPage() {
             </div>
 
             {scoreBatch && (
-              <div className="mb-4 rounded-md border border-brand/25 bg-brand/10 p-3" aria-live="polite">
+              <div
+                className={`mb-4 rounded-md border p-3 ${
+                  scoreBatch.failed
+                    ? "border-danger/30 bg-danger/10"
+                    : "border-brand/25 bg-brand/10"
+                }`}
+                aria-live="polite"
+              >
                 <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
-                  <span className="font-medium text-brand-ink">
+                  <span className={scoreBatch.failed ? "font-medium text-danger-ink" : "font-medium text-brand-ink"}>
                     {scoreBatch.status === "completed"
-                      ? "Background scoring complete"
+                      ? scoreBatch.failed
+                        ? "Scoring finished with some failures"
+                        : "Background scoring complete"
                       : scoreBatch.status === "cancelled"
                         ? "Background scoring stopped"
                         : scoreBatch.status === "queued"
@@ -884,6 +908,34 @@ export default function CareerPage() {
                 </div>
                 {scoreBatch.current_job?.title && (
                   <div className="mt-2 truncate text-xs text-ink-subtle">Currently scoring: {scoreBatch.current_job.title}</div>
+                )}
+                {scoreBatch.status === "completed" && (
+                  <div className="mt-3 flex flex-wrap items-center justify-between gap-2 border-t border-current/10 pt-3 text-xs text-ink-subtle">
+                    <span>
+                      {MIN_MATCH_SCORE}+ scores are in Matches. Lower scores stay here; failures remain Unscored.
+                    </span>
+                    <div className="flex flex-wrap gap-2">
+                      {tabCounts.matches > 0 && (
+                        <button
+                          type="button"
+                          onClick={() => setActiveTab("matches")}
+                          className="rounded-md border border-line bg-panel px-2.5 py-1.5 font-medium text-ink transition hover:border-brand hover:text-analytic-hover"
+                        >
+                          View Matches ({tabCounts.matches})
+                        </button>
+                      )}
+                      {unscoredFoundJobs.length > 0 && (
+                        <button
+                          type="button"
+                          onClick={scoreAllFoundJobs}
+                          disabled={loading || !cvText.trim()}
+                          className="rounded-md border border-line bg-panel px-2.5 py-1.5 font-medium text-ink transition hover:border-brand hover:text-analytic-hover disabled:opacity-50"
+                        >
+                          Score remaining ({unscoredFoundJobs.length})
+                        </button>
+                      )}
+                    </div>
+                  </div>
                 )}
               </div>
             )}
