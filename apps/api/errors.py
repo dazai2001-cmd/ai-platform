@@ -9,9 +9,9 @@ def error_response(
     exc: Exception,
     status: int = 500,
     message: str = "Request failed",
-    expose: bool = False,
+    expose: bool | None = None,
 ):
     logger.exception("API request failed", exc_info=exc)
-    if expose or isinstance(exc, ValueError) or settings.DEBUG:
+    if settings.DEBUG or expose is True or (expose is None and isinstance(exc, ValueError)):
         message = str(exc)
     return jsonify({"error": message}), status

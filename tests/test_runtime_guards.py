@@ -295,6 +295,8 @@ class IngestionLimitTests(unittest.TestCase):
 
     def test_replacing_manifest_record_deletes_only_superseded_managed_upload(self):
         import domain.bi.pipeline as bi_module
+        import services.bi.dataset_repository as repository_module
+        from services.storage.sqlite_service import SQLiteService
 
         with tempfile.TemporaryDirectory() as tmpdir:
             upload_root = Path(tmpdir) / "uploads"
@@ -309,16 +311,20 @@ class IngestionLimitTests(unittest.TestCase):
             ]))
 
             pipeline = object.__new__(BIPipeline)
+            durable_db = SQLiteService(str(Path(tmpdir) / "datasets.db"))
             with (
                 patch.object(settings, "UPLOAD_PATH", str(upload_root)),
                 patch.object(bi_module, "_manifest", manifest),
+                patch.object(repository_module, "db", durable_db),
             ):
                 pipeline._save_dataset_record("sales", str(new_path), "csv", user_id="owner")
+                durable = bi_module.dataset_repository.fetch("owner", "sales")
 
             self.assertFalse(old_path.exists())
             self.assertTrue(new_path.exists())
-            records = json.loads(manifest.read_text())
-            self.assertEqual(records[0]["path"], str(new_path))
+            self.assertEqual(json.loads(manifest.read_text()), [])
+            self.assertEqual(durable["rows"], 1)
+            self.assertIn(b"2", durable["payload"])
 
 
 if __name__ == "__main__":

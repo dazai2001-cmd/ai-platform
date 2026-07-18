@@ -6,6 +6,15 @@ from core.config.constants import *
 load_dotenv()
 
 
+def _database_auto_migrate_default() -> bool:
+    """Only local SQLite development may apply schema changes implicitly."""
+    return not (
+        os.getenv("APP_ENV", "development").strip().lower() == "production"
+        or os.getenv("AI_RUNTIME", "local").strip().lower() == "cloud"
+        or bool(os.getenv("DATABASE_URL", "").strip())
+    )
+
+
 class Settings:
     # App
     APP_ENV = os.getenv("APP_ENV", "development").strip().lower()
@@ -143,12 +152,17 @@ class Settings:
     MAX_DATASET_STORAGE_BYTES_PER_USER = int(
         os.getenv("MAX_DATASET_STORAGE_BYTES_PER_USER", str(100 * 1024 * 1024))
     )
+    MAX_DATASET_STORAGE_BYTES_TOTAL = int(
+        os.getenv("MAX_DATASET_STORAGE_BYTES_TOTAL", str(256 * 1024 * 1024))
+    )
     MAX_EXCEL_UNCOMPRESSED_BYTES = int(
         os.getenv("MAX_EXCEL_UNCOMPRESSED_BYTES", str(100 * 1024 * 1024))
     )
     MAX_EXCEL_ARCHIVE_FILES = int(os.getenv("MAX_EXCEL_ARCHIVE_FILES", "1000"))
     MAX_EXCEL_COMPRESSION_RATIO = float(os.getenv("MAX_EXCEL_COMPRESSION_RATIO", "100"))
     BI_SQL_TIMEOUT_MS = int(os.getenv("BI_SQL_TIMEOUT_MS", "1000"))
+    BI_MAX_CONCURRENT_QUERIES = int(os.getenv("BI_MAX_CONCURRENT_QUERIES", "1"))
+    BI_QUERY_SLOT_TIMEOUT_SECONDS = float(os.getenv("BI_QUERY_SLOT_TIMEOUT_SECONDS", "1"))
     BI_MAX_SQL_CHARS = int(os.getenv("BI_MAX_SQL_CHARS", "10000"))
     BI_MAX_RESULT_CELL_BYTES = int(os.getenv("BI_MAX_RESULT_CELL_BYTES", str(1024 * 1024)))
     MAX_DOCUMENTS_PER_USER = int(os.getenv("MAX_DOCUMENTS_PER_USER", "100"))
@@ -205,6 +219,10 @@ class Settings:
     DATABASE_CONNECT_TIMEOUT_SECONDS = int(os.getenv("DATABASE_CONNECT_TIMEOUT_SECONDS", "10"))
     DATABASE_POOL_MIN_SIZE = int(os.getenv("DATABASE_POOL_MIN_SIZE", "1"))
     DATABASE_POOL_MAX_SIZE = int(os.getenv("DATABASE_POOL_MAX_SIZE", "5"))
+    DATABASE_AUTO_MIGRATE = os.getenv(
+        "DATABASE_AUTO_MIGRATE",
+        "true" if _database_auto_migrate_default() else "false",
+    ).lower() == "true"
 
 
 settings = Settings()

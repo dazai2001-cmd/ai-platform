@@ -37,7 +37,7 @@ describe("ChatWindow", () => {
 
     render(<ChatWindow onSend={onSend} placeholder="Ask the assistant" />);
 
-    const input = screen.getByRole("textbox", { name: "" });
+    const input = screen.getByRole("textbox", { name: "Message" });
     await user.type(input, "First attempt{Enter}");
     expect(await screen.findByText("Error: Service unavailable")).toBeInTheDocument();
 
@@ -84,6 +84,23 @@ describe("ChatWindow", () => {
     expect(onSend).not.toHaveBeenCalled();
     expect(screen.queryByRole("button", { name: "Stop response" })).not.toBeInTheDocument();
     expect(screen.queryByText("Thinking...")).not.toBeInTheDocument();
+  });
+
+  it("aborts a regular request when the user stops it", async () => {
+    const user = userEvent.setup();
+    const onSend = vi.fn((_message: string, _signal?: AbortSignal) => new Promise<any>(() => {}));
+    render(<ChatWindow onSend={onSend} />);
+
+    await user.type(screen.getByRole("textbox", { name: "Message" }), "Keep calculating{Enter}");
+    const stop = await screen.findByRole("button", { name: "Stop response" });
+    const signal = onSend.mock.calls[0][1] as AbortSignal;
+    expect(signal.aborted).toBe(false);
+
+    await user.click(stop);
+
+    expect(signal.aborted).toBe(true);
+    expect(await screen.findByText("Response stopped.")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Stop response" })).not.toBeInTheDocument();
   });
 
   it("times out an inactive stream and releases the loading state", async () => {

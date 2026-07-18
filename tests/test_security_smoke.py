@@ -62,7 +62,11 @@ class UrlValidationTests(unittest.TestCase):
 
 class BIPipelineValidationTests(unittest.TestCase):
     def test_bi_prompt_formats_with_json_example(self):
-        prompt = _PROMPT.format(schema="Columns:\n  value (int64)", sample="value\n1", question="Show values")
+        prompt = _PROMPT.format(
+            schema="Columns:\n  value (int64)",
+            history="(no prior conversation)",
+            question="Show values",
+        )
         self.assertIn('"chart_type": "bar"', prompt)
         self.assertNotIn('"values": [10, 20, 30]', prompt)
         self.assertIn("do not use `SUM()`", prompt)

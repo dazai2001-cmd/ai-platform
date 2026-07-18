@@ -216,6 +216,44 @@ describe("API client", () => {
     expect(requestSignal?.aborted).toBe(true);
   });
 
+  it("forwards caller cancellation to a BI request", async () => {
+    let requestSignal: AbortSignal | undefined;
+    vi.stubGlobal("fetch", vi.fn((_url: string, options?: RequestInit) => {
+      requestSignal = options?.signal as AbortSignal;
+      return new Promise<Response>(() => undefined);
+    }));
+
+    const { api } = await import("./api");
+    const controller = new AbortController();
+    const assertion = expect(
+      api.biAsk("Show revenue", "session-1", "sales", controller.signal),
+    ).rejects.toMatchObject({ name: "AbortError" });
+
+    controller.abort();
+    await assertion;
+    expect(requestSignal?.aborted).toBe(true);
+  });
+
+  it("URL-encodes dataset names when deleting them", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ deleted: "quarter one" }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { api } = await import("./api");
+    await expect(api.biDeleteDataset("quarter one")).resolves.toEqual({ deleted: "quarter one" });
+
+    expect(fetchMock).toHaveBeenCalledWith("/api/bi/datasets/quarter%20one", {
+      method: "DELETE",
+      headers: {},
+      credentials: "include",
+      signal: expect.any(AbortSignal),
+    });
+  });
+
   it("allows callers to abort a streaming connection", async () => {
     let requestSignal: AbortSignal | undefined;
     vi.stubGlobal("fetch", vi.fn((_url: string, options?: RequestInit) => {

@@ -1,13 +1,18 @@
 import json
+import math
+import numbers
 import re
 import sqlite3
 import threading
 import time
 import zipfile
+from contextlib import contextmanager
+from io import BytesIO
 import pandas as pd
 from pathlib import Path
 from infrastructure.llm.ollama_client import ollama
 from core.config.settings import settings
+from services.bi.dataset_repository import dataset_repository
 
 _PROMPT = (Path(__file__).parents[2] / "core/prompts/bi_prompt.txt").read_text()
 _NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,63}$")
@@ -31,10 +36,42 @@ _SQL_PAREN_KEYWORDS = frozenset({"cast", "in"})
 _MAX_RESULT_ROWS = 200
 _SQL_PROGRESS_OPCODES = 1000
 
-# In-memory dataset store: {name: pd.DataFrame}
+# Compatibility-only in-memory store for legacy fixtures. Durable uploads are
+# parsed on demand so public users cannot fill a Render worker's RAM via cache.
 _datasets: dict[str, pd.DataFrame] = {}
+_dataset_versions: dict[str, float] = {}
 _manifest = Path(settings.BI_MANIFEST_PATH)
 _MANIFEST_LOCK = threading.RLock()
+_BI_QUERY_SLOTS = threading.BoundedSemaphore(settings.BI_MAX_CONCURRENT_QUERIES)
+
+
+class BIInputError(ValueError):
+    """A safe, user-correctable BI request error."""
+
+
+class BIProviderError(RuntimeError):
+    """A safe, user-facing failure returned by the configured BI model provider."""
+
+    def __init__(self, message: str):
+        rate_limited = "429" in message or "rate limit" in message.lower()
+        self.status_code = 429 if rate_limited else 502
+        safe_message = (
+            "The BI model is temporarily rate-limited. Wait a moment and try again."
+            if rate_limited
+            else "The BI model is temporarily unavailable. Please try again."
+        )
+        super().__init__(safe_message)
+
+
+class BIBusyError(BIProviderError):
+    """Raised before loading a frame when this worker is at its BI memory limit."""
+
+    def __init__(self):
+        RuntimeError.__init__(
+            self,
+            "BI analysis is busy on this server. Wait a moment and try again.",
+        )
+        self.status_code = 503
 
 
 class BIPipeline:
@@ -49,39 +86,47 @@ class BIPipeline:
         return f"{user_id}:{name}"
 
     def load_csv(self, path: str, name: str, user_id: str = "local") -> dict:
-        name = self._validate_name(name)
-        self._validate_upload_size(path)
-        df = pd.read_csv(path, nrows=settings.MAX_DATASET_ROWS + 1)
-        self._validate_dataframe(df)
-        self._commit_dataset(name, path, "csv", df, user_id=user_id)
-        return {"name": name, "rows": len(df), "columns": list(df.columns)}
+        with self._frame_slot():
+            name = self._normalize_name(name)
+            self._validate_upload_size(path)
+            df = pd.read_csv(path, nrows=settings.MAX_DATASET_ROWS + 1)
+            self._validate_dataframe(df)
+            name = self._commit_dataset(name, path, "csv", df, user_id=user_id, unique=True)
+            return {"name": name, "rows": len(df), "columns": list(df.columns)}
 
     def load_excel(self, path: str, name: str, user_id: str = "local") -> dict:
-        name = self._validate_name(name)
-        self._validate_upload_size(path)
-        self._validate_excel_archive(path)
-        df = pd.read_excel(path, nrows=settings.MAX_DATASET_ROWS + 1)
-        self._validate_dataframe(df)
-        self._commit_dataset(name, path, "excel", df, user_id=user_id)
-        return {"name": name, "rows": len(df), "columns": list(df.columns)}
+        with self._frame_slot():
+            name = self._normalize_name(name)
+            self._validate_upload_size(path)
+            self._validate_excel_archive(path)
+            df = pd.read_excel(path, nrows=settings.MAX_DATASET_ROWS + 1)
+            self._validate_dataframe(df)
+            name = self._commit_dataset(name, path, "excel", df, user_id=user_id, unique=True)
+            return {"name": name, "rows": len(df), "columns": list(df.columns)}
 
     def list_datasets(self, user_id: str = "local") -> list[dict]:
+        stored = dataset_repository.list_for_user(user_id)
+        if stored:
+            return stored
+        # Compatibility for isolated unit fixtures and one-time legacy
+        # manifest migration. Cloud requests use the durable repository.
         with _MANIFEST_LOCK:
             return [
                 {"name": key.split(":", 1)[1], "rows": len(df), "columns": list(df.columns)}
                 for key, df in _datasets.items()
-                if key.startswith(f"{user_id}:")
+                if key.startswith(f"{user_id}:") and key not in _dataset_versions
             ]
 
     def get_sample(self, name: str, user_id: str = "local") -> dict | None:
-        with _MANIFEST_LOCK:
-            df = _datasets.get(self._dataset_key(name, user_id))
-        if df is None:
-            return None
-        return {
-            "columns": list(df.columns),
-            "sample": df.head(5).to_dict(orient="records")
-        }
+        with self._frame_slot():
+            name = self._validate_name(name)
+            df = self._get_dataset(name, user_id, nrows=5)
+            if df is None:
+                return None
+            return {
+                "columns": list(df.columns),
+                "sample": df.head(5).to_dict(orient="records")
+            }
 
     def delete_dataset(self, name: str, user_id: str = "local") -> bool:
         name = self._validate_name(name)
@@ -93,11 +138,13 @@ class BIPipeline:
                 if record.get("name") == name and record.get("user_id", "local") == user_id
             ]
             remaining = [record for record in records if record not in removed]
-            if not removed and key not in _datasets:
+            durable_removed = dataset_repository.delete(user_id, name)
+            if not removed and key not in _datasets and not durable_removed:
                 return False
             if removed:
                 self._write_manifest_unlocked(remaining)
             _datasets.pop(key, None)
+            _dataset_versions.pop(key, None)
             self._remove_unreferenced_uploads(removed, remaining)
             return True
 
@@ -105,22 +152,80 @@ class BIPipeline:
     # Query
     # ------------------------------------------------------------------
 
-    def ask(self, question: str, dataset_name: str = None, model: str = None, user_id: str = "local") -> dict:
-        model = model or settings.TASK_MODELS["bi"]
-        with _MANIFEST_LOCK:
-            user_keys = [key for key in _datasets if key.startswith(f"{user_id}:")]
-            # Pick dataset and retain a stable object reference if another upload
-            # replaces the same name while this query is running.
-            display_name = dataset_name or (user_keys[0].split(":", 1)[1] if user_keys else None)
-            key = self._dataset_key(display_name, user_id) if display_name else None
-            df = _datasets.get(key) if key else None
-        if df is None:
-            return {"answer": "No dataset loaded. Please upload a CSV or Excel file first.", "chart": None}
-        schema = self._schema(df)
-        sample = df.head(5).to_string(index=False)
+    def ask(
+        self,
+        question: str,
+        dataset_name: str = None,
+        model: str = None,
+        user_id: str = "local",
+        history: list[dict] | None = None,
+    ) -> dict:
+        with self._frame_slot():
+            return self._ask_bounded(
+                question,
+                dataset_name=dataset_name,
+                model=model,
+                user_id=user_id,
+                history=history,
+            )
 
-        prompt = _PROMPT.format(schema=schema, sample=sample, question=question)
-        response = ollama.generate(model, prompt, temperature=0.1)
+    @staticmethod
+    @contextmanager
+    def _frame_slot():
+        """Bound every request path that materializes a full DataFrame."""
+        acquired = _BI_QUERY_SLOTS.acquire(
+            timeout=settings.BI_QUERY_SLOT_TIMEOUT_SECONDS
+        )
+        if not acquired:
+            raise BIBusyError()
+        try:
+            yield
+        finally:
+            _BI_QUERY_SLOTS.release()
+
+    def _ask_bounded(
+        self,
+        question: str,
+        dataset_name: str = None,
+        model: str = None,
+        user_id: str = "local",
+        history: list[dict] | None = None,
+    ) -> dict:
+        model = model or settings.TASK_MODELS["bi"]
+        available = self.list_datasets(user_id)
+        if not available:
+            raise BIInputError("No dataset is available. Upload a CSV or Excel file first.")
+        if not dataset_name:
+            raise BIInputError("Select a dataset before asking a BI question.")
+        display_name = self._validate_name(dataset_name)
+        # Retain a stable DataFrame reference for the duration of this query;
+        # another worker may replace the durable copy concurrently.
+        df = self._get_dataset(display_name, user_id)
+        if df is None:
+            raise BIInputError(
+                f"Dataset '{display_name}' was not found. Select an available dataset and try again."
+            )
+        schema = self._schema(df)
+        question = (question or "").strip()
+        if not question:
+            raise BIInputError("A BI question is required.")
+        if len(question) > min(4000, settings.MAX_PROMPT_CHARS // 2):
+            raise BIInputError("BI question is too long.")
+
+        prompt = _PROMPT.format(
+            schema=schema,
+            history=self._history_text(history),
+            question=question,
+        )
+        if len(prompt) > settings.MAX_PROMPT_CHARS:
+            raise BIInputError(
+                "The dataset schema and question are too large to analyse safely. "
+                "Use shorter column names or a shorter question."
+            )
+        try:
+            response = ollama.generate(model, prompt, temperature=0.1)
+        except RuntimeError as exc:
+            raise BIProviderError(str(exc)) from exc
 
         chart_hint = self._extract_chart(response)
 
@@ -330,20 +435,114 @@ class BIPipeline:
         cleaned = re.sub(r"\n{3,}", "\n\n", cleaned).strip()
         return cleaned or "I prepared a query for this request."
 
-    @staticmethod
-    def _result_answer(rows: list[dict], has_chart: bool) -> str:
+    @classmethod
+    def _result_answer(cls, rows: list[dict], has_chart: bool) -> str:
         count = len(rows)
+        if not rows:
+            return "No matching rows were found."
+
+        prefix = "I generated the chart. " if has_chart else ""
+        if count == 1:
+            return prefix + cls._summarize_row(rows[0]) + "."
+
+        shown = rows[:3]
+        columns = list(shown[0])
+        if len(columns) == 2:
+            label_column, value_column = columns
+            details = "; ".join(
+                f"{cls._format_result_value(row.get(label_column), label_column)} — "
+                f"{cls._humanize_column(value_column)} "
+                f"{cls._format_result_value(row.get(value_column), value_column)}"
+                for row in shown
+            )
+        else:
+            details = "; ".join(
+                f"Row {index}: {cls._summarize_row(row)}"
+                for index, row in enumerate(shown, start=1)
+            )
+        remainder = f"; and {count - len(shown)} more rows" if count > len(shown) else ""
         noun = "row" if count == 1 else "rows"
-        if has_chart:
-            return f"Chart generated from {count} query result {noun}."
-        return f"Query completed and returned {count} {noun}."
+        return f"{prefix}{count} {noun}: {details}{remainder}."
+
+    @staticmethod
+    def _history_text(history: list[dict] | None) -> str:
+        """Bound prior chat context so follow-ups resolve without unbounded prompts."""
+        if not history:
+            return "(no prior conversation)"
+
+        messages: list[str] = []
+        remaining = min(4000, settings.MAX_PROMPT_CHARS // 2)
+        for item in reversed(history[-8:]):
+            if not isinstance(item, dict):
+                continue
+            role = str(item.get("role") or "").lower()
+            if role not in {"user", "assistant"}:
+                continue
+            content = re.sub(r"\s+", " ", str(item.get("content") or "")).strip()
+            if content:
+                message = f"{role.upper()}: {content[:800]}"
+                if len(message) + 1 > remaining:
+                    continue
+                messages.append(message)
+                remaining -= len(message) + 1
+        messages.reverse()
+        return "\n".join(messages) or "(no prior conversation)"
+
+    @classmethod
+    def _summarize_row(cls, row: dict) -> str:
+        entries = list(row.items())
+        summary = "; ".join(
+            f"{cls._humanize_column(column)} is {cls._format_result_value(value, column)}"
+            for column, value in entries[:6]
+        )
+        if len(entries) > 6:
+            summary += f"; plus {len(entries) - 6} more columns"
+        return summary or "The query returned an empty result row"
+
+    @staticmethod
+    def _humanize_column(column: object) -> str:
+        return re.sub(r"\s+", " ", str(column).replace("_", " ")).strip().lower()
+
+    @staticmethod
+    def _format_result_value(value: object, column: object = "") -> str:
+        if value is None or (isinstance(value, float) and math.isnan(value)):
+            return "null"
+        if isinstance(value, bool):
+            return "yes" if value else "no"
+        if isinstance(value, numbers.Number):
+            numeric = float(value)
+            if not math.isfinite(numeric):
+                return str(value)
+            if numeric.is_integer():
+                formatted = f"{int(numeric):,}"
+            else:
+                formatted = f"{numeric:,.2f}".rstrip("0").rstrip(".")
+            label = str(column).lower()
+            if "percent" in label or re.search(r"(^|_)pct($|_)", label):
+                formatted += "%"
+            return formatted
+        text = re.sub(r"\s+", " ", str(value)).strip()
+        return text if len(text) <= 120 else text[:117] + "..."
 
     @staticmethod
     def _validate_name(name: str) -> str:
+        if not isinstance(name, str):
+            raise BIInputError("Dataset name must be a string")
         name = (name or "").strip()
         if not _NAME_RE.match(name):
-            raise ValueError("Dataset name must start with a letter or underscore and use only letters, numbers, and underscores")
+            raise BIInputError("Dataset name must start with a letter or underscore and use only letters, numbers, and underscores")
         return name
+
+    @staticmethod
+    def _normalize_name(name: str) -> str:
+        """Turn an uploaded filename/display name into a safe dataset identifier."""
+        normalized = re.sub(r"[^A-Za-z0-9_]+", "_", (name or "").strip())
+        normalized = re.sub(r"_+", "_", normalized).strip("_").lower()
+        if not normalized:
+            normalized = "dataset"
+        if normalized[0].isdigit():
+            normalized = f"dataset_{normalized}"
+        return BIPipeline._validate_name(normalized[:64].rstrip("_") or "dataset")
 
     @staticmethod
     def _validate_dataframe(df: pd.DataFrame) -> None:
@@ -457,9 +656,45 @@ class BIPipeline:
         except zipfile.BadZipFile as exc:
             raise ValueError("Invalid spreadsheet archive") from exc
 
+    def _get_dataset(
+        self,
+        name: str,
+        user_id: str,
+        *,
+        nrows: int | None = None,
+    ) -> pd.DataFrame | None:
+        """Return the current durable dataset without retaining it globally."""
+        key = self._dataset_key(name, user_id)
+        with _MANIFEST_LOCK:
+            cached = _datasets.get(key)
+            cached_version = _dataset_versions.get(key)
+
+        record = dataset_repository.fetch(user_id, name)
+        if record is None:
+            # Direct cache injection is kept only for isolated/legacy tests.
+            if cached is not None and cached_version is None:
+                return cached
+            with _MANIFEST_LOCK:
+                _datasets.pop(key, None)
+                _dataset_versions.pop(key, None)
+            return None
+        stream = BytesIO(record["payload"])
+        row_limit = nrows if nrows is not None else settings.MAX_DATASET_ROWS + 1
+        if record["kind"] == "csv":
+            frame = pd.read_csv(stream, nrows=row_limit)
+        elif record["kind"] == "excel":
+            frame = pd.read_excel(stream, nrows=row_limit)
+        else:
+            raise ValueError("Stored dataset type is unsupported")
+        self._validate_dataframe(frame)
+        return frame
+
     def _load_manifest(self):
+        """Import pre-database manifests once, preserving compatible local data."""
         with _MANIFEST_LOCK:
             records = self._read_manifest_unlocked()
+            migrated: list[dict] = []
+            remaining: list[dict] = []
             for record in records:
                 try:
                     name = self._validate_name(record["name"])
@@ -475,21 +710,28 @@ class BIPipeline:
                     else:
                         continue
                     self._validate_dataframe(df)
-                    key = self._dataset_key(name, user_id)
-                    other_memory = sum(
-                        self._dataframe_memory_bytes(existing)
-                        for existing_key, existing in _datasets.items()
-                        if existing_key.startswith(f"{user_id}:") and existing_key != key
+                    dataset_repository.upsert(
+                        user_id=user_id,
+                        name=name,
+                        kind=kind,
+                        payload=Path(path).read_bytes(),
+                        row_count=len(df),
+                        columns=[str(column) for column in df.columns],
+                        max_datasets=settings.MAX_DATASETS_PER_USER,
+                        max_storage_bytes=settings.MAX_DATASET_STORAGE_BYTES_PER_USER,
+                        max_total_storage_bytes=settings.MAX_DATASET_STORAGE_BYTES_TOTAL,
                     )
-                    if other_memory + self._dataframe_memory_bytes(df) > settings.MAX_DATASET_MEMORY_BYTES_PER_USER:
-                        continue
-                    _datasets[key] = df
+                    migrated.append(record)
                 except Exception:
-                    continue
+                    remaining.append(record)
+            if migrated:
+                self._write_manifest_unlocked(remaining)
+                self._remove_unreferenced_uploads(migrated, remaining)
 
     def _save_dataset_record(self, name: str, path: str, kind: str, user_id: str = "local"):
         """Compatibility helper for record-only callers; uploads use _commit_dataset."""
-        self._replace_dataset_record(name, path, kind, user_id=user_id, df=None)
+        with self._frame_slot():
+            self._replace_dataset_record(name, path, kind, user_id=user_id, df=None)
 
     def _commit_dataset(
         self,
@@ -498,8 +740,16 @@ class BIPipeline:
         kind: str,
         df: pd.DataFrame,
         user_id: str = "local",
-    ) -> None:
-        self._replace_dataset_record(name, path, kind, user_id=user_id, df=df)
+        unique: bool = False,
+    ) -> str:
+        return self._replace_dataset_record(
+            name,
+            path,
+            kind,
+            user_id=user_id,
+            df=df,
+            unique=unique,
+        )
 
     def _replace_dataset_record(
         self,
@@ -509,16 +759,42 @@ class BIPipeline:
         *,
         user_id: str,
         df: pd.DataFrame | None,
-    ) -> None:
+        unique: bool = False,
+    ) -> str:
         if kind not in {"csv", "excel"}:
             raise ValueError("Unsupported dataset kind")
         path = str(Path(path))
         new_size = self._validate_upload_size(path)
-        new_memory = self._dataframe_memory_bytes(df) if df is not None else 0
-        key = self._dataset_key(name, user_id)
+        if df is None:
+            if kind == "csv":
+                df = pd.read_csv(path, nrows=settings.MAX_DATASET_ROWS + 1)
+            else:
+                self._validate_excel_archive(path)
+                df = pd.read_excel(path, nrows=settings.MAX_DATASET_ROWS + 1)
+            self._validate_dataframe(df)
+        new_memory = self._dataframe_memory_bytes(df)
+        payload = Path(path).read_bytes()
 
         with _MANIFEST_LOCK:
             records = self._read_manifest_unlocked(strict=True)
+            if new_memory > settings.MAX_DATASET_MEMORY_BYTES_PER_USER:
+                raise ValueError(
+                    "User exceeds the configured cumulative in-memory dataset limit"
+                )
+
+            name = dataset_repository.upsert(
+                user_id=user_id,
+                name=name,
+                kind=kind,
+                payload=payload,
+                row_count=len(df),
+                columns=[str(column) for column in df.columns],
+                max_datasets=settings.MAX_DATASETS_PER_USER,
+                max_storage_bytes=settings.MAX_DATASET_STORAGE_BYTES_PER_USER,
+                max_total_storage_bytes=settings.MAX_DATASET_STORAGE_BYTES_TOTAL,
+                unique=unique,
+            )
+            key = self._dataset_key(name, user_id)
             replaced = [
                 record for record in records
                 if record.get("name") == name and record.get("user_id", "local") == user_id
@@ -530,46 +806,15 @@ class BIPipeline:
                     and record.get("user_id", "local") == user_id
                 )
             ]
-            user_records = [
-                record for record in remaining
-                if record.get("user_id", "local") == user_id
-            ]
-            if len(user_records) + 1 > settings.MAX_DATASETS_PER_USER:
-                raise ValueError(
-                    f"User exceeds the {settings.MAX_DATASETS_PER_USER}-dataset limit"
-                )
-
-            storage_bytes = sum(self._record_size(record) for record in user_records) + new_size
-            if storage_bytes > settings.MAX_DATASET_STORAGE_BYTES_PER_USER:
-                raise ValueError(
-                    "User exceeds the configured cumulative dataset storage limit"
-                )
-
-            if df is not None:
-                other_memory = sum(
-                    self._dataframe_memory_bytes(existing)
-                    for existing_key, existing in _datasets.items()
-                    if existing_key.startswith(f"{user_id}:") and existing_key != key
-                )
-                if other_memory + new_memory > settings.MAX_DATASET_MEMORY_BYTES_PER_USER:
-                    raise ValueError(
-                        "User exceeds the configured cumulative in-memory dataset limit"
-                    )
-
-            updated = remaining + [{
-                "name": name,
-                "path": path,
-                "kind": kind,
-                "user_id": user_id,
-                "size_bytes": new_size,
-                "memory_bytes": new_memory,
-            }]
-            # The manifest replacement and in-memory swap are serialized in one
-            # critical section, so readers can only observe the old or new pair.
-            self._write_manifest_unlocked(updated)
-            if df is not None:
-                _datasets[key] = df
-            self._remove_unreferenced_uploads(replaced, updated)
+            # New uploads no longer depend on a local manifest or Render disk.
+            if replaced:
+                self._write_manifest_unlocked(remaining)
+            # Do not retain durable frames after upload. Each ask keeps only a
+            # request-local reference, bounding worker memory under public use.
+            _datasets.pop(key, None)
+            _dataset_versions.pop(key, None)
+            self._remove_unreferenced_uploads(replaced, remaining)
+            return name
 
     @staticmethod
     def _read_manifest_unlocked(*, strict: bool = False) -> list[dict]:

@@ -7,6 +7,7 @@ from apps.api.errors import error_response
 from apps.api.auth_context import current_user_id
 from core.config.constants import TASK_BI
 from core.config.settings import settings
+from domain.bi.pipeline import BIInputError, BIProviderError
 from services.settings.model_settings_service import model_settings
 
 bi_bp = Blueprint("bi", __name__, url_prefix="/api/bi")
@@ -15,7 +16,6 @@ bi_bp = Blueprint("bi", __name__, url_prefix="/api/bi")
 @bi_bp.post("/upload")
 def upload():
     path = None
-    retained = False
     try:
         f = request.files.get("file")
         if not f or f.filename == "":
@@ -27,25 +27,37 @@ def upload():
             info = bi_agent.load_csv(path, name, user_id=user_id)
         else:
             info = bi_agent.load_excel(path, name, user_id=user_id)
-        retained = True
         return jsonify(info)
+    except BIProviderError as e:
+        return error_response(e, e.status_code, expose=True)
     except ValueError as e:
         return error_response(e, 400)
     except Exception as e:
         return error_response(e, 500)
     finally:
-        if not retained:
-            remove_upload(path)
+        # The pipeline persists the bounded upload in the application database,
+        # so Render's temporary filesystem is only request-scoped scratch space.
+        remove_upload(path)
 
 
 @bi_bp.get("/datasets")
 def datasets():
-    return jsonify(bi_agent.list_datasets(user_id=current_user_id()))
+    try:
+        return jsonify(bi_agent.list_datasets(user_id=current_user_id()))
+    except Exception as e:
+        return error_response(e, 500, expose=False)
 
 
 @bi_bp.get("/datasets/<name>/sample")
 def sample(name: str):
-    result = bi_agent.get_sample(name, user_id=current_user_id())
+    try:
+        result = bi_agent.get_sample(name, user_id=current_user_id())
+    except BIProviderError as e:
+        return error_response(e, e.status_code, expose=True)
+    except BIInputError as e:
+        return error_response(e, 400)
+    except Exception as e:
+        return error_response(e, 500, expose=False)
     if result is None:
         return jsonify({"error": "Dataset not found"}), 404
     return jsonify(result)
@@ -82,5 +94,13 @@ def ask():
         )
         result["route"] = TASK_BI
         return jsonify(result)
+    except BIProviderError as e:
+        return error_response(e, e.status_code, expose=True)
+    except ValueError as e:
+        return error_response(e, 400)
+    except Exception as e:
+        return error_response(e, 500, expose=False)
+    except Exception as e:
+        return error_response(e, 500, expose=False)
     except Exception as e:
         return error_response(e, 502)

@@ -25,6 +25,23 @@ SCHEMA_MIGRATIONS_TABLE = "app_schema_migrations"
 POSTGRES_MIGRATION_LOCK_ID = 4_139_188_001
 POSTGRES_SCHEMES = {"postgres", "postgresql"}
 SCHEMA_NAME_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+EXPECTED_MIGRATIONS = {
+    1: "initial_schema",
+    2: "user_scopes",
+    3: "foreign_key_indexes",
+    4: "durable_bi_datasets",
+}
+BI_DATASET_POSTGRES_COLUMNS = {
+    "user_id": "text",
+    "name": "text",
+    "kind": "text",
+    "payload": "bytea",
+    "size_bytes": "bigint",
+    "row_count": "integer",
+    "columns_json": "text",
+    "created_at": "double precision",
+    "updated_at": "double precision",
+}
 
 
 class DatabaseJSONMixin:
@@ -228,6 +245,44 @@ def _performance_index_statements() -> list[str]:
     ]
 
 
+def _dataset_storage_statements(backend: str) -> list[str]:
+    """Shared, durable BI dataset storage for SQLite and PostgreSQL.
+
+    Dataset bytes live in the application database so Render restarts and
+    horizontally scaled API workers do not lose or disagree about uploads.
+    The private application schema keeps these rows outside Supabase's Data
+    API surface.
+    """
+    payload_type = "BYTEA" if backend == "postgresql" else "BLOB"
+    statements = [
+        f"""
+        CREATE TABLE IF NOT EXISTS bi_datasets (
+          user_id TEXT NOT NULL,
+          name TEXT NOT NULL,
+          kind TEXT NOT NULL,
+          payload {payload_type} NOT NULL,
+          size_bytes BIGINT NOT NULL,
+          row_count INTEGER NOT NULL,
+          columns_json TEXT NOT NULL,
+          created_at DOUBLE PRECISION NOT NULL,
+          updated_at DOUBLE PRECISION NOT NULL,
+          PRIMARY KEY (user_id, name),
+          CHECK (kind IN ('csv', 'excel'))
+        )
+        """,
+        "CREATE INDEX IF NOT EXISTS idx_bi_datasets_user_updated "
+        "ON bi_datasets(user_id, updated_at DESC)",
+    ]
+    if backend == "postgresql":
+        # The table is outside Supabase's exposed Data API schemas. Explicit
+        # grants on the private schema/table are the access-control boundary;
+        # this also permits a non-owner, DML-only Render runtime credential.
+        statements.extend([
+            "REVOKE ALL ON TABLE bi_datasets FROM PUBLIC",
+        ])
+    return statements
+
+
 class SQLiteService(DatabaseJSONMixin):
     backend = "sqlite"
 
@@ -245,29 +300,37 @@ class SQLiteService(DatabaseJSONMixin):
         conn.execute("PRAGMA synchronous = NORMAL")
         return conn
 
+    @contextmanager
+    def connection(self) -> Iterator[sqlite3.Connection]:
+        """Yield a transactional connection and always release its file handle."""
+        conn = self.connect()
+        try:
+            with conn:
+                yield conn
+        finally:
+            conn.close()
+
     def execute(self, sql: str, params: tuple = ()):
-        with self._lock, self.connect() as conn:
+        with self._lock, self.connection() as conn:
             conn.execute(sql, params)
-            conn.commit()
 
     def query(self, sql: str, params: tuple = ()) -> list[dict[str, Any]]:
-        with self.connect() as conn:
+        with self.connection() as conn:
             rows = conn.execute(sql, params).fetchall()
             return [dict(row) for row in rows]
 
     def query_one(self, sql: str, params: tuple = ()) -> dict[str, Any] | None:
-        with self.connect() as conn:
+        with self.connection() as conn:
             row = conn.execute(sql, params).fetchone()
             return dict(row) if row else None
 
     def execute_many(self, statements: list[tuple[str, tuple]]):
-        with self._lock, self.connect() as conn:
+        with self._lock, self.connection() as conn:
             for sql, params in statements:
                 conn.execute(sql, params)
-            conn.commit()
 
     def _init(self):
-        with self.connect() as conn:
+        with self.connection() as conn:
             conn.execute("PRAGMA journal_mode = WAL")
         self.execute(
             f"""
@@ -300,6 +363,12 @@ class SQLiteService(DatabaseJSONMixin):
             self.execute(
                 f"INSERT INTO {SCHEMA_MIGRATIONS_TABLE} (version, name, applied_at) VALUES (?, ?, ?)",
                 (3, "foreign_key_indexes", time.time()),
+            )
+        if 4 not in applied:
+            self.execute_many([(sql, ()) for sql in _dataset_storage_statements(self.backend)])
+            self.execute(
+                f"INSERT INTO {SCHEMA_MIGRATIONS_TABLE} (version, name, applied_at) VALUES (?, ?, ?)",
+                (4, "durable_bi_datasets", time.time()),
             )
 
     def _has_column(self, table: str, column: str) -> bool:
@@ -368,6 +437,7 @@ class PostgreSQLService(DatabaseJSONMixin):
         pool: Any | None = None,
         initialize: bool = True,
         schema: str | None = None,
+        auto_migrate: bool | None = None,
     ):
         self.database_url = (database_url or "").strip()
         parsed = urlsplit(self.database_url)
@@ -381,11 +451,17 @@ class PostgreSQLService(DatabaseJSONMixin):
         self._owns_pool = pool is None
         self._closed = False
         self._pool = pool or self._create_pool()
+        self.auto_migrate = (
+            settings.DATABASE_AUTO_MIGRATE if auto_migrate is None else bool(auto_migrate)
+        )
         if self._owns_pool:
             self._pool.wait(timeout=settings.DATABASE_CONNECT_TIMEOUT_SECONDS)
             atexit.register(self.close)
         if initialize:
-            self._init()
+            if self.auto_migrate:
+                self._init()
+            else:
+                self._verify_schema()
 
     def _create_pool(self):
         try:
@@ -459,12 +535,14 @@ class PostgreSQLService(DatabaseJSONMixin):
                 )
                 """
             )
-            applied = {
-                int(row["version"])
+            applied_rows = [
+                dict(row)
                 for row in conn.execute(
-                    f"SELECT version FROM {SCHEMA_MIGRATIONS_TABLE}"
+                    f"SELECT version, name FROM {SCHEMA_MIGRATIONS_TABLE}"
                 ).fetchall()
-            }
+            ]
+            self._validate_migration_rows(applied_rows, require_all=False)
+            applied = {int(row["version"]) for row in applied_rows}
             if 1 not in applied:
                 for statement in _schema_statements(self.backend):
                     conn.execute(statement)
@@ -489,6 +567,112 @@ class PostgreSQLService(DatabaseJSONMixin):
                     "(version, name, applied_at) VALUES (%s, %s, %s)",
                     (3, "foreign_key_indexes", time.time()),
                 )
+            if 4 not in applied:
+                for statement in _dataset_storage_statements(self.backend):
+                    conn.execute(statement)
+                conn.execute(
+                    f"INSERT INTO {SCHEMA_MIGRATIONS_TABLE} "
+                    "(version, name, applied_at) VALUES (%s, %s, %s)",
+                    (4, "durable_bi_datasets", time.time()),
+                )
+            self._verify_bi_dataset_shape(conn)
+
+    def _verify_schema(self) -> None:
+        """Verify a separately migrated production schema without issuing DDL."""
+        try:
+            with self.connect() as conn:
+                rows = [
+                    dict(row)
+                    for row in conn.execute(
+                        f"SELECT version, name FROM {SCHEMA_MIGRATIONS_TABLE}"
+                    ).fetchall()
+                ]
+                self._validate_migration_rows(rows, require_all=True)
+                self._verify_bi_dataset_shape(conn)
+        except RuntimeError:
+            raise
+        except Exception as exc:
+            raise RuntimeError(
+                "Database schema is not ready. Apply the checked-in migrations "
+                "with a migration credential before starting the API."
+            ) from exc
+
+    @staticmethod
+    def _validate_migration_rows(rows: list[dict[str, Any]], *, require_all: bool) -> None:
+        applied = {int(row["version"]): str(row["name"]) for row in rows}
+        conflicts = [
+            version
+            for version, expected_name in EXPECTED_MIGRATIONS.items()
+            if version in applied and applied[version] != expected_name
+        ]
+        if conflicts:
+            version = min(conflicts)
+            raise RuntimeError(
+                f"Database migration {version} is recorded as '{applied[version]}' "
+                f"instead of '{EXPECTED_MIGRATIONS[version]}'."
+            )
+        if require_all:
+            missing = sorted(set(EXPECTED_MIGRATIONS) - set(applied))
+            if missing:
+                raise RuntimeError(
+                    "Database schema is behind; missing application migration(s): "
+                    + ", ".join(map(str, missing))
+                )
+
+    def _verify_bi_dataset_shape(self, conn: Any) -> None:
+        rows = conn.execute(
+            """
+            SELECT column_name, data_type, is_nullable
+            FROM information_schema.columns
+            WHERE table_schema = %s AND table_name = 'bi_datasets'
+            """,
+            (self.schema,),
+        ).fetchall()
+        actual = {
+            str(row["column_name"]): (str(row["data_type"]), str(row["is_nullable"]))
+            for row in rows
+        }
+        expected = {
+            name: (data_type, "NO")
+            for name, data_type in BI_DATASET_POSTGRES_COLUMNS.items()
+        }
+        if actual != expected:
+            raise RuntimeError(
+                f"Database migration 4 is recorded, but {self.schema}.bi_datasets "
+                "does not have the expected columns and types."
+            )
+
+        constraint_rows = conn.execute(
+            """
+            SELECT constraint_type
+            FROM information_schema.table_constraints
+            WHERE table_schema = %s AND table_name = 'bi_datasets'
+            """,
+            (self.schema,),
+        ).fetchall()
+        constraint_types = {str(row["constraint_type"]) for row in constraint_rows}
+        if not {"PRIMARY KEY", "CHECK"}.issubset(constraint_types):
+            raise RuntimeError(
+                f"Database migration 4 is recorded, but {self.schema}.bi_datasets "
+                "is missing its primary-key or dataset-kind constraint."
+            )
+
+        security_row = conn.execute(
+            """
+            SELECT table_class.relrowsecurity
+            FROM pg_class AS table_class
+            JOIN pg_namespace AS table_namespace
+              ON table_namespace.oid = table_class.relnamespace
+            WHERE table_namespace.nspname = %s
+              AND table_class.relname = 'bi_datasets'
+            """,
+            (self.schema,),
+        ).fetchone()
+        if security_row is None or bool(security_row["relrowsecurity"]):
+            raise RuntimeError(
+                f"{self.schema}.bi_datasets must use private-schema grants rather "
+                "than policy-less row-level security."
+            )
 
     @staticmethod
     def _postgres_scope_migration_statements() -> list[str]:

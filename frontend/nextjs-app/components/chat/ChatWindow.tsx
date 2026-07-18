@@ -64,6 +64,7 @@ interface Props {
   initialMessages?: Message[];
   resetKey?: string;
   onMessagesChange?: (messages: Message[]) => void;
+  disabled?: boolean;
   placeholder?: string;
   emptyTitle?: string;
   suggestions?: { label: string; prompt: string; description?: string }[];
@@ -77,6 +78,7 @@ export default function ChatWindow({
   initialMessages = [],
   resetKey,
   onMessagesChange,
+  disabled = false,
   placeholder = "Ask anything...",
   emptyTitle = "Start a conversation",
   suggestions = [],
@@ -168,7 +170,7 @@ export default function ChatWindow({
 
   const send = async () => {
     const text = input.trim();
-    if (!text || loading) return;
+    if (!text || loading || disabled) return;
 
     setInput("");
     setLoading(true);
@@ -471,7 +473,9 @@ export default function ChatWindow({
             ref={inputRef}
             className="app-input max-h-40 min-h-12 flex-1 resize-none rounded-md px-4 py-3 text-sm placeholder:text-muted-soft"
             placeholder={placeholder}
+            aria-label="Message"
             value={input}
+            disabled={disabled}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={(e) => {
               if (e.key === "Enter" && !e.shiftKey) {
@@ -495,7 +499,7 @@ export default function ChatWindow({
             <button
               type="button"
               onClick={send}
-              disabled={!input.trim()}
+              disabled={disabled || !input.trim()}
               className="grid h-12 w-12 shrink-0 place-items-center rounded-md bg-brand text-white transition duration-150 hover:bg-brand-hover disabled:cursor-not-allowed disabled:bg-soft disabled:text-muted disabled:shadow-none"
               aria-label="Send message"
             >

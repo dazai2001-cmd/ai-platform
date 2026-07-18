@@ -223,8 +223,8 @@ export const api = {
   job: (jobId: string) => get(`/api/jobs/${jobId}`),
 
   // BI
-  biAsk: (question: string, sessionId?: string, dataset?: string) =>
-    post("/api/bi/ask", { question, session_id: sessionId, dataset }),
+  biAsk: (question: string, sessionId?: string, dataset?: string, signal?: AbortSignal) =>
+    post("/api/bi/ask", { question, session_id: sessionId, dataset }, signal),
   biUpload: (file: File, name: string) => {
     const fd = new FormData();
     fd.append("file", file);
@@ -232,7 +232,9 @@ export const api = {
     return upload("/api/bi/upload", fd);
   },
   biDatasets: () => get("/api/bi/datasets"),
-  biSample: (name: string) => get(`/api/bi/datasets/${name}/sample`),
+  biSample: (name: string) => get(`/api/bi/datasets/${encodeURIComponent(name)}/sample`),
+  biDeleteDataset: (name: string) =>
+    request(`/api/bi/datasets/${encodeURIComponent(name)}`, { method: "DELETE", headers: headers() }),
 
   // Memory
   getHistory: (sessionId: string) => get(`/api/memory/${sessionId}`),

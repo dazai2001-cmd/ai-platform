@@ -19,7 +19,14 @@ class BIAgent:
         model = model or settings.TASK_MODELS["bi"]
 
         try:
-            result = bi_pipeline.ask(question, dataset_name=dataset_name, model=model, user_id=user_id)
+            history = memory.to_llm_format(session_id, user_id=user_id)
+            result = bi_pipeline.ask(
+                question,
+                dataset_name=dataset_name,
+                model=model,
+                user_id=user_id,
+                history=history,
+            )
             result["session_id"] = session_id
 
             memory.add(session_id, "user", question, user_id=user_id)

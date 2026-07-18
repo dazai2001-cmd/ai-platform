@@ -7,6 +7,7 @@ from agents.bi_agent import bi_agent
 from agents.critic_agent import critic_agent
 from agents.general_agent import general_agent
 from core.config.constants import TASK_BI, TASK_CAREER, TASK_MEMORY, TASK_RAG
+from domain.bi.pipeline import BIInputError, BIProviderError
 from apps.api.errors import error_response
 from services.chat.conversation_service import conversations
 from apps.api.auth_context import current_user_id
@@ -80,7 +81,12 @@ def chat():
 
     try:
         if task_type in {TASK_CAREER, TASK_MEMORY}:
-            result = workspace_router.handle(query, session_id=session_id, user_id=user_id)
+            result = workspace_router.handle(
+                query,
+                session_id=session_id,
+                user_id=user_id,
+                dataset_name=data.get("dataset"),
+            )
         elif task_type == TASK_BI:
             result = bi_agent.ask(query, session_id=session_id, dataset_name=data.get("dataset"), model=model, user_id=user_id)
         elif task_type == TASK_RAG:
@@ -99,8 +105,12 @@ def chat():
         result["session_id"] = session_id
         return jsonify(result)
 
+    except BIProviderError as e:
+        return error_response(e, e.status_code, expose=True)
+    except BIInputError as e:
+        return error_response(e, 400)
     except Exception as e:
-        return error_response(e, 502)
+        return error_response(e, 502, expose=False)
 
 
 @chat_bp.post("/workspace")
@@ -113,13 +123,20 @@ def workspace_chat():
         return jsonify({"error": "query is required"}), 400
 
     try:
-        result = workspace_router.handle(query, session_id=session_id, user_id=current_user_id())
+        result = workspace_router.handle(
+            query,
+            session_id=session_id,
+            user_id=current_user_id(),
+            dataset_name=data.get("dataset"),
+        )
         result["session_id"] = session_id
         return jsonify(result)
-    except ValueError as e:
+    except BIProviderError as e:
+        return error_response(e, e.status_code, expose=True)
+    except BIInputError as e:
         return error_response(e, 400)
     except Exception as e:
-        return error_response(e, 502)
+        return error_response(e, 502, expose=False)
 
 
 @chat_bp.post("/general")
@@ -190,14 +207,21 @@ def chat_stream():
     user_id = current_user_id()
     model = model_settings.model_for(task_type, user_id=user_id)
 
-    if task_type == TASK_RAG:
-        generator, session_id, selected_model = rag_agent.stream_ask(query, session_id=session_id, model=model, user_id=user_id)
-    elif task_type == TASK_BI:
-        result = bi_agent.ask(query, session_id=session_id, dataset_name=data.get("dataset"), model=model, user_id=user_id)
-        selected_model = result.get("model") or model or ""
-        generator = iter([result.get("answer", "")])
-    else:
-        generator, session_id, selected_model = general_agent.stream_ask(query, session_id=session_id, model=model, user_id=user_id)
+    try:
+        if task_type == TASK_RAG:
+            generator, session_id, selected_model = rag_agent.stream_ask(query, session_id=session_id, model=model, user_id=user_id)
+        elif task_type == TASK_BI:
+            result = bi_agent.ask(query, session_id=session_id, dataset_name=data.get("dataset"), model=model, user_id=user_id)
+            selected_model = result.get("model") or model or ""
+            generator = iter([result.get("answer", "")])
+        else:
+            generator, session_id, selected_model = general_agent.stream_ask(query, session_id=session_id, model=model, user_id=user_id)
+    except BIProviderError as e:
+        return error_response(e, e.status_code, expose=True)
+    except BIInputError as e:
+        return error_response(e, 400)
+    except Exception as e:
+        return error_response(e, 502, expose=False)
 
     def stream():
         for token in generator:

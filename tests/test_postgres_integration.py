@@ -8,6 +8,7 @@ import uuid
 
 import pytest
 
+from services.bi.dataset_repository import DatasetCapacityError, DatasetRepository
 from services.storage.sqlite_service import PostgreSQLService
 
 
@@ -90,6 +91,50 @@ def test_real_postgres_migrations_are_idempotent(postgres_db):
             {"version": 1, "name": "initial_schema"},
             {"version": 2, "name": "user_scopes"},
             {"version": 3, "name": "foreign_key_indexes"},
+            {"version": 4, "name": "durable_bi_datasets"},
         ]
     finally:
         second_instance.close()
+
+
+def test_real_postgres_bi_payload_round_trip_and_global_quota(postgres_db, monkeypatch):
+    import services.bi.dataset_repository as repository_module
+
+    monkeypatch.setattr(repository_module, "db", postgres_db)
+    repository = DatasetRepository()
+    first_user = str(uuid.uuid4())
+    second_user = str(uuid.uuid4())
+    common = {
+        "kind": "csv",
+        "row_count": 1,
+        "columns": ["revenue"],
+        "max_datasets": 10,
+        "max_storage_bytes": 100,
+        "max_total_storage_bytes": 8,
+    }
+
+    repository.upsert(
+        user_id=first_user,
+        name="sales",
+        payload=b"12345",
+        **common,
+    )
+    assert repository.fetch(first_user, "sales")["payload"] == b"12345"
+    assert repository.fetch(second_user, "sales") is None
+
+    with pytest.raises(DatasetCapacityError, match="application dataset storage limit"):
+        repository.upsert(
+            user_id=second_user,
+            name="sales",
+            payload=b"6789",
+            **common,
+        )
+
+    assert repository.delete(first_user, "sales") is True
+    repository.upsert(
+        user_id=second_user,
+        name="sales",
+        payload=b"6789",
+        **common,
+    )
+    assert repository.fetch(second_user, "sales")["payload"] == b"6789"

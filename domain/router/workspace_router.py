@@ -10,6 +10,7 @@ from agents.general_agent import general_agent
 from agents.rag_agent import rag_agent
 from core.config.constants import TASK_BI, TASK_CAREER, TASK_GENERAL, TASK_MEMORY, TASK_RAG
 from core.config.settings import settings
+from domain.bi.pipeline import BIInputError
 from infrastructure.llm.ollama_client import ollama
 from services.analytics.analytics_service import analytics
 from services.career.job_search_service import MIN_MATCH_SCORE, SEARCH_JOB_SOURCES, career_jobs
@@ -117,7 +118,13 @@ class WorkspaceRouter:
         fallback["router_source"] = "fallback"
         return fallback
 
-    def handle(self, query: str, session_id: str, user_id: str = "local") -> dict[str, Any]:
+    def handle(
+        self,
+        query: str,
+        session_id: str,
+        user_id: str = "local",
+        dataset_name: str | None = None,
+    ) -> dict[str, Any]:
         decision = self.route(query, user_id=user_id)
         action = decision["action"]
         args = decision.get("arguments") or {}
@@ -128,7 +135,29 @@ class WorkspaceRouter:
             return self._with_workspace_meta(result, decision, TASK_RAG)
 
         if action == "bi_ask":
-            result = bi_agent.ask(query, session_id=session_id, model=model_settings.model_for(TASK_BI, user_id=user_id), user_id=user_id)
+            if dataset_name is not None and not isinstance(dataset_name, str):
+                raise BIInputError("Dataset name must be a string")
+            selected_dataset = (dataset_name or "").strip()
+            if not selected_dataset:
+                available = bi_agent.list_datasets(user_id=user_id)
+                if not available:
+                    raise BIInputError(
+                        "No dataset is available. Upload a CSV or Excel file in BI Dashboard first."
+                    )
+                if len(available) > 1:
+                    raise BIInputError(
+                        "Multiple datasets are available. Choose one in BI Dashboard or send its dataset name with this request."
+                    )
+                selected_dataset = str(available[0].get("name") or "").strip()
+                if not selected_dataset:
+                    raise BIInputError("The available dataset could not be selected. Try uploading it again.")
+            result = bi_agent.ask(
+                query,
+                session_id=session_id,
+                dataset_name=selected_dataset,
+                model=model_settings.model_for(TASK_BI, user_id=user_id),
+                user_id=user_id,
+            )
             return self._with_workspace_meta(result, decision, TASK_BI)
 
         if action == "general_chat":

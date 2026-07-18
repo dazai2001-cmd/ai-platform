@@ -69,6 +69,9 @@ The deployed version uses a same-origin Next.js proxy from Netlify to the Render
 - Block dangerous SQL keywords such as DROP, DELETE, INSERT, UPDATE, and ALTER
 - Execute queries against uploaded datasets
 - Return rows and chart-ready results for visualisation
+- Preserve follow-up context within each BI session without sending raw sample rows to cloud models
+- Persist user-scoped dataset uploads in Supabase PostgreSQL in cloud mode, with SQLite parity locally
+- Reload, switch, and delete datasets safely across API restarts and multiple workers
 
 ### Persistent Memory
 
@@ -475,6 +478,10 @@ verification email delivery are not configured safely.
 when set, it is injected by the server-side proxy and is never exposed as a
 `NEXT_PUBLIC_*` browser value.
 
+The production example sets `DATABASE_AUTO_MIGRATE=false`. Apply the checked-in
+database migrations with a migration credential before the first start; the API
+then verifies the schema without requiring DDL rights at runtime.
+
 Build and start the stack:
 
 ```bash
@@ -517,15 +524,26 @@ connections and a small client pool by default:
 DATABASE_URL=postgresql://<pooled-user>:<password>@<pooler-host>:5432/postgres
 DATABASE_SCHEMA=app_private
 DATABASE_SSLMODE=require
+DATABASE_AUTO_MIGRATE=false
+
+MAX_DATASETS_PER_USER=10
+MAX_DATASET_STORAGE_BYTES_PER_USER=104857600
+MAX_DATASET_STORAGE_BYTES_TOTAL=268435456
+BI_MAX_CONCURRENT_QUERIES=1
 DATABASE_POOL_MIN_SIZE=1
 DATABASE_POOL_MAX_SIZE=5
 ```
 
-On startup, the API obtains a PostgreSQL advisory lock and applies its versioned,
-idempotent schema migrations. Application tables are created in `app_private`,
-which is not exposed through Supabase's public Data API. The app continues to
-use its own verified-email sessions; enabling this database does not switch it
-to Supabase Auth. Existing SQLite rows are not copied automatically.
+With `DATABASE_AUTO_MIGRATE=true`, startup obtains a PostgreSQL advisory lock and
+applies the versioned, idempotent schema migrations. With it disabled, startup
+only verifies the previously migrated schema. Application tables, including
+durable BI dataset payloads and metadata, are created in `app_private`, which is
+not exposed through
+Supabase's public Data API. BI uploads are bounded by the configured per-file,
+per-user, application-wide, and dataset-count quotas. The app continues to use its own verified-email
+sessions; enabling this database does not switch it to Supabase Auth. Existing
+SQLite rows are not copied automatically; legacy BI manifest entries are imported
+into the configured application database once when their source files are present.
 
 ### Container release pipeline
 
@@ -647,6 +665,20 @@ Use Supabase's IPv4-compatible session pooler on port `5432` for a persistent
 Render backend. Application tables live in the private `app_private` schema and
 the app continues to use its own authentication rather than Supabase Auth.
 Existing SQLite users, chats, CVs, and jobs are intentionally not copied.
+
+For least-privilege production database access, apply the checked-in Supabase
+migrations with an owner/migration credential before starting the API, then set
+`DATABASE_AUTO_MIGRATE=false` and give Render a separate runtime credential with
+only the schema usage and table DML it needs. With automatic migrations disabled,
+startup performs read-only migration-name and BI-table shape checks and fails
+clearly if the schema is missing or partial. Existing deployments can leave
+automatic migration enabled during a controlled rollout, but that requires the
+runtime credential to retain DDL privileges.
+
+`app_private.bi_datasets` is backend-only and uses private-schema/table grants
+instead of Supabase Data API RLS. Grant the Render runtime role only `USAGE` on
+`app_private` plus the required table DML; never grant this table to `anon` or
+`authenticated`, and do not add `app_private` to the exposed Data API schemas.
 
 Frontend environment variables for Netlify:
 
@@ -780,7 +812,13 @@ MAX_URL_INGEST_BYTES=5242880
 MAX_UPLOAD_BYTES=52428800
 MAX_CV_UPLOAD_BYTES=10485760
 MAX_DATASET_UPLOAD_BYTES=26214400
+MAX_DATASETS_PER_USER=10
+MAX_DATASET_STORAGE_BYTES_PER_USER=104857600
+MAX_DATASET_STORAGE_BYTES_TOTAL=268435456
+BI_MAX_CONCURRENT_QUERIES=1
+BI_QUERY_SLOT_TIMEOUT_SECONDS=1
 MAX_DOCUMENTS_PER_USER=100
+# Legacy local-manifest import path; new BI uploads use the application database.
 BI_MANIFEST_PATH=data/processed/bi_datasets.json
 RATE_LIMIT_ENABLED=true
 RATE_LIMIT_STORAGE_URI=memory://
