@@ -39,6 +39,47 @@ The deployed version uses a same-origin Next.js proxy from Netlify to the Render
 
 ---
 
+## Product Tour
+
+Screenshots below use local demo mode and synthetic data.
+
+### Unified AI Workspace
+
+![AI workspace with routed chat commands and conversation history](docs/screenshots/chat-workspace.png)
+
+The main workspace brings general chat, document retrieval, memory, model settings, analytics, and career tools into one routed interface.
+
+<table>
+  <tr>
+    <td width="50%">
+      <strong>2nd Brain</strong><br><br>
+      <img src="docs/screenshots/knowledge-base.png" alt="Knowledge base for PDF, URL, and note ingestion">
+    </td>
+    <td width="50%">
+      <strong>Natural-Language BI</strong><br><br>
+      <img src="docs/screenshots/bi-dashboard.png" alt="BI dashboard with a loaded synthetic dataset">
+    </td>
+  </tr>
+  <tr>
+    <td>Ingest PDFs, URLs, and notes, then ask grounded questions across the resulting knowledge base.</td>
+    <td>Upload CSV or Excel data, manage datasets, and ask questions in plain English.</td>
+  </tr>
+</table>
+
+### Career Copilot
+
+![Career copilot with job search criteria and application tracker](docs/screenshots/career-copilot.png)
+
+Search and filter roles, import a PDF or Word CV, score job fit, generate application material, and track each opportunity from discovery through application.
+
+### Usage Analytics
+
+![Analytics dashboard for agent usage, model usage, and latency](docs/screenshots/analytics-dashboard.png)
+
+Monitor query volume, success rate, average and p95 latency, recent requests, and agent/model usage from the same workspace.
+
+---
+
 ## Key Features
 
 ### AI Chat and Model Routing
@@ -944,7 +985,6 @@ Recommended before production use:
 
 - Add architecture diagram image
 - Add demo video link
-- Add screenshots of Chat, Brain, BI, Career and Analytics pages
 - Add latency benchmarking across models
 - Add model/provider comparison
 - Add user roles and permissions
