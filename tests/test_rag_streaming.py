@@ -134,4 +134,5 @@ def test_streaming_and_regular_qa_share_bounded_conversation_context(monkeypatch
     assert "old message outside the context limit" not in prompt
     assert all(f"recent message {i}" in prompt for i in range(4))
     assert "Juniper has a budget of 123 dollars." in prompt
+    assert prompt.split("CONVERSATION HISTORY:\n", 1)[1].split("QUESTION:\n", 1)[1].startswith("What was that?")
     assert retriever.search.call_args.kwargs == {"user_id": "owner"}

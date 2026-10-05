@@ -42,9 +42,9 @@ class QAPipeline:
                 role = msg.get("role", "user").upper()
                 history_text += f"{role}: {msg.get('content', '')}\n"
 
-        full_question = f"{history_text}USER: {question}" if history_text else question
-
-        return _PROMPT.format(context=context, question=full_question)
+        return _PROMPT.format(
+            context=context, history=history_text or "(no prior conversation)", question=question,
+        )
 
     def stream_ask(self, question: str, model: str = None, user_id: str = "local", history: list[dict] | None = None):
         model = model or settings.TASK_MODELS["rag"]
