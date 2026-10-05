@@ -5,6 +5,7 @@ import json
 import math
 import os
 import threading
+import uuid
 from collections import defaultdict
 from contextlib import contextmanager
 from dataclasses import dataclass, field
@@ -14,6 +15,7 @@ from typing import Iterator, Optional
 
 from core.config.constants import ANALYTICS_LOG
 from core.config.settings import settings
+from services.storage.sqlite_service import db
 
 
 _PROCESS_LOCK = threading.RLock()
@@ -82,20 +84,25 @@ class QueryEvent:
 
 
 class AnalyticsService:
-    """Append-only, tenant-scoped query analytics with bounded local storage."""
+    """Tenant-scoped query analytics persisted in the application database."""
 
     def __init__(
         self,
-        log_path: str | Path = ANALYTICS_LOG,
+        log_path: str | Path | None = None,
         *,
+        database=None,
         max_log_bytes: int = _DEFAULT_MAX_LOG_BYTES,
         max_backups: int = _DEFAULT_MAX_BACKUPS,
     ) -> None:
-        self._log = Path(log_path)
+        # Explicit file paths retain the standalone log API for tools and
+        # legacy tests. Application requests use the shared durable database.
+        self._database = database if database is not None else (db if log_path is None else None)
+        self._log = Path(log_path or ANALYTICS_LOG)
         self._lock_file = self._log.with_name(f"{self._log.name}.lock")
         self._max_log_bytes = max(1, int(max_log_bytes))
         self._max_backups = max(0, int(max_backups))
-        self._log.parent.mkdir(parents=True, exist_ok=True)
+        if self._database is None:
+            self._log.parent.mkdir(parents=True, exist_ok=True)
 
     @staticmethod
     def _store_raw_text() -> bool:
@@ -141,6 +148,22 @@ class AnalyticsService:
 
     def record(self, event: QueryEvent) -> None:
         payload = self._serialize(event)
+        if self._database is not None:
+            timestamp = datetime.fromisoformat(payload["timestamp"].replace("Z", "+00:00"))
+            if timestamp.tzinfo is None:
+                timestamp = timestamp.replace(tzinfo=timezone.utc)
+            cutoff = (
+                _utc_now() - timedelta(days=max(1, int(settings.ANALYTICS_RETENTION_DAYS)))
+            ).timestamp()
+            encoded = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+            self._database.execute_many([
+                (
+                    "INSERT INTO analytics_events (id, user_id, occurred_at, payload_json) VALUES (?, ?, ?, ?)",
+                    (uuid.uuid4().hex, event.user_id, timestamp.timestamp(), encoded),
+                ),
+                ("DELETE FROM analytics_events WHERE user_id = ? AND occurred_at < ?", (event.user_id, cutoff)),
+            ])
+            return
         encoded = (json.dumps(payload, ensure_ascii=False, separators=(",", ":")) + "\n").encode(
             "utf-8"
         )
@@ -156,6 +179,25 @@ class AnalyticsService:
             return []
         retention_hours = max(1, int(getattr(settings, "ANALYTICS_RETENTION_DAYS", 30))) * 24
         cutoff = _utc_now() - timedelta(hours=min(max(0, since_hours), retention_hours))
+        if self._database is not None:
+            rows = self._database.query(
+                "SELECT payload_json FROM analytics_events WHERE user_id = ? AND occurred_at >= ? ORDER BY occurred_at, id",
+                (user_id, cutoff.timestamp()),
+            )
+            events = []
+            for row in rows:
+                event = self._parse_owned_event(row["payload_json"], user_id=user_id, cutoff=cutoff)
+                if event is not None:
+                    events.append(event)
+            # Retain access to pre-upgrade local logs without writing new
+            # application events to an ephemeral file or duplicating rows.
+            if any(path.exists() for path in self._log_paths_oldest_first()):
+                events.extend(self._load_file(user_id=user_id, cutoff=cutoff))
+                events.sort(key=lambda event: str(event["timestamp"]))
+            return events
+        return self._load_file(user_id=user_id, cutoff=cutoff)
+
+    def _load_file(self, *, user_id: str, cutoff: datetime) -> list[dict]:
         events: list[dict] = []
         with self._exclusive_lock():
             for path in self._log_paths_oldest_first():

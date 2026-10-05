@@ -16,6 +16,7 @@ htmlcov/
 frontend/nextjs-app/node_modules/
 frontend/nextjs-app/.next/
 frontend/nextjs-app/coverage/
+supabase/.temp/
 
 data/raw/
 data/uploads/

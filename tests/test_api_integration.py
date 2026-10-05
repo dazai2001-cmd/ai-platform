@@ -69,10 +69,11 @@ def test_brain_stream_is_saved_in_server_memory_and_usage(client, tmp_path, monk
     from agents import rag_agent as rag_module
     from apps.api.routes import health as health_routes
     from services.analytics.analytics_service import AnalyticsService
+    from services.storage.sqlite_service import db
 
     owner = _create_verified_session(client, "brain-owner@example.com")
     other = _create_verified_session(client, "brain-other@example.com")
-    metrics = AnalyticsService(tmp_path / "brain-analytics.jsonl")
+    metrics = AnalyticsService(tmp_path / "brain-analytics.jsonl", database=db)
     monkeypatch.setattr(rag_module, "analytics", metrics)
     monkeypatch.setattr(health_routes, "analytics", metrics)
     monkeypatch.setattr(rag_module.rag_agent, "ensure_ready", Mock())

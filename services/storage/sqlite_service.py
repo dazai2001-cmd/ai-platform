@@ -30,6 +30,10 @@ EXPECTED_MIGRATIONS = {
     2: "user_scopes",
     3: "foreign_key_indexes",
     4: "durable_bi_datasets",
+    5: "durable_query_analytics",
+}
+ANALYTICS_POSTGRES_COLUMNS = {
+    "id": "text", "user_id": "text", "occurred_at": "double precision", "payload_json": "text",
 }
 BI_DATASET_POSTGRES_COLUMNS = {
     "user_id": "text",
@@ -283,6 +287,35 @@ def _dataset_storage_statements(backend: str) -> list[str]:
     return statements
 
 
+def _analytics_storage_statements(backend: str) -> list[str]:
+    statements = [
+        """
+        CREATE TABLE IF NOT EXISTS analytics_events (
+          id TEXT PRIMARY KEY NOT NULL,
+          user_id TEXT NOT NULL,
+          occurred_at DOUBLE PRECISION NOT NULL,
+          payload_json TEXT NOT NULL
+        )
+        """,
+        "CREATE INDEX IF NOT EXISTS idx_analytics_events_user_time ON analytics_events(user_id, occurred_at)",
+    ]
+    if backend == "postgresql":
+        statements.append("REVOKE ALL ON TABLE analytics_events FROM PUBLIC")
+        statements.append("""
+            DO $analytics_privacy$
+            BEGIN
+              IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'anon') THEN
+                REVOKE ALL ON TABLE analytics_events FROM anon;
+              END IF;
+              IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'authenticated') THEN
+                REVOKE ALL ON TABLE analytics_events FROM authenticated;
+              END IF;
+            END;
+            $analytics_privacy$;
+        """)
+    return statements
+
+
 class SQLiteService(DatabaseJSONMixin):
     backend = "sqlite"
 
@@ -369,6 +402,12 @@ class SQLiteService(DatabaseJSONMixin):
             self.execute(
                 f"INSERT INTO {SCHEMA_MIGRATIONS_TABLE} (version, name, applied_at) VALUES (?, ?, ?)",
                 (4, "durable_bi_datasets", time.time()),
+            )
+        if 5 not in applied:
+            self.execute_many([(sql, ()) for sql in _analytics_storage_statements(self.backend)])
+            self.execute(
+                f"INSERT INTO {SCHEMA_MIGRATIONS_TABLE} (version, name, applied_at) VALUES (?, ?, ?)",
+                (5, "durable_query_analytics", time.time()),
             )
 
     def _has_column(self, table: str, column: str) -> bool:
@@ -575,7 +614,16 @@ class PostgreSQLService(DatabaseJSONMixin):
                     "(version, name, applied_at) VALUES (%s, %s, %s)",
                     (4, "durable_bi_datasets", time.time()),
                 )
+            if 5 not in applied:
+                for statement in _analytics_storage_statements(self.backend):
+                    conn.execute(statement)
+                conn.execute(
+                    f"INSERT INTO {SCHEMA_MIGRATIONS_TABLE} "
+                    "(version, name, applied_at) VALUES (%s, %s, %s)",
+                    (5, "durable_query_analytics", time.time()),
+                )
             self._verify_bi_dataset_shape(conn)
+            self._verify_analytics_shape(conn)
 
     def _verify_schema(self) -> None:
         """Verify a separately migrated production schema without issuing DDL."""
@@ -589,6 +637,7 @@ class PostgreSQLService(DatabaseJSONMixin):
                 ]
                 self._validate_migration_rows(rows, require_all=True)
                 self._verify_bi_dataset_shape(conn)
+                self._verify_analytics_shape(conn)
         except RuntimeError:
             raise
         except Exception as exc:
@@ -672,6 +721,20 @@ class PostgreSQLService(DatabaseJSONMixin):
             raise RuntimeError(
                 f"{self.schema}.bi_datasets must use private-schema grants rather "
                 "than policy-less row-level security."
+            )
+
+    def _verify_analytics_shape(self, conn: Any) -> None:
+        rows = conn.execute(
+            "SELECT column_name, data_type, is_nullable FROM information_schema.columns "
+            "WHERE table_schema = %s AND table_name = 'analytics_events'",
+            (self.schema,),
+        ).fetchall()
+        actual = {str(row["column_name"]): (str(row["data_type"]), str(row["is_nullable"])) for row in rows}
+        expected = {name: (data_type, "NO") for name, data_type in ANALYTICS_POSTGRES_COLUMNS.items()}
+        if actual != expected:
+            raise RuntimeError(
+                f"Database migration 5 is recorded, but {self.schema}.analytics_events "
+                "does not have the expected columns and types."
             )
 
     @staticmethod

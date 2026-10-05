@@ -37,7 +37,7 @@ TABLES = (
     "auth_users", "auth_email_tokens", "auth_sessions", "memory_messages",
     "memory_facts", "model_settings", "user_model_settings", "chat_conversations",
     "chat_messages", "career_preferences", "career_profile", "career_jobs",
-    "career_score_batches", "career_score_tasks", "usage_events", "bi_datasets",
+    "career_score_batches", "career_score_tasks", "usage_events", "bi_datasets", "analytics_events",
 )
 IDENTITY_TABLES = ("memory_messages", "chat_messages", "usage_events")
 

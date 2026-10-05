@@ -39,7 +39,7 @@ def test_brain_stream_saves_postgres_history_for_follow_up_queries(postgres_db, 
     memory_module = importlib.import_module("services.memory.memory_service")
     monkeypatch.setattr(memory_module, "db", postgres_db)
     memory = MemoryService()
-    metrics = AnalyticsService(tmp_path / "brain-postgres-analytics.jsonl")
+    metrics = AnalyticsService(tmp_path / "brain-postgres-analytics.jsonl", database=postgres_db)
     monkeypatch.setattr(rag_module, "memory", memory)
     monkeypatch.setattr(rag_module, "analytics", metrics)
     agent = rag_module.RAGAgent()
@@ -60,6 +60,31 @@ def test_brain_stream_saves_postgres_history_for_follow_up_queries(postgres_db, 
     assert len(MemoryService().get(session_id, user_id=user_id)) == 4
     assert MemoryService().get(session_id, user_id="other-owner") == []
     assert metrics.summary(user_id=user_id)["by_agent"] == {"rag": 2}
+    restarted = PostgreSQLService(POSTGRES_URL, schema=postgres_db.schema, auto_migrate=False)
+    try:
+        fresh_metrics = AnalyticsService(tmp_path / "absent.jsonl", database=restarted)
+        assert fresh_metrics.summary(user_id=user_id)["by_agent"] == {"rag": 2}
+        assert fresh_metrics.summary(user_id="other-owner")["total_queries"] == 0
+    finally:
+        restarted.close()
+
+
+def test_checked_in_analytics_migration_is_idempotent_on_real_postgres(postgres_db):
+    from pathlib import Path
+
+    path = next((Path(__file__).resolve().parents[1] / "supabase" / "migrations").glob("*_durable_query_analytics.sql"))
+    migration = path.read_text(encoding="utf-8").replace("app_private.", f'"{postgres_db.schema}".')
+    # This fixture owns a fresh random test schema; simulate the pre-upgrade
+    # version before checking that the committed SQL creates the real table.
+    postgres_db.execute_many([
+        ("DROP TABLE analytics_events", ()),
+        ("DELETE FROM app_schema_migrations WHERE version = 5", ()),
+    ])
+    postgres_db.execute(migration)
+    postgres_db.execute(migration)
+    assert postgres_db.query_one("SELECT name FROM app_schema_migrations WHERE version=5") == {"name": "durable_query_analytics"}
+    verified = PostgreSQLService(POSTGRES_URL, schema=postgres_db.schema, auto_migrate=False)
+    verified.close()
 
 
 def test_real_postgres_schema_crud_upserts_and_foreign_keys(postgres_db):
@@ -126,6 +151,7 @@ def test_real_postgres_migrations_are_idempotent(postgres_db):
             {"version": 2, "name": "user_scopes"},
             {"version": 3, "name": "foreign_key_indexes"},
             {"version": 4, "name": "durable_bi_datasets"},
+            {"version": 5, "name": "durable_query_analytics"},
         ]
     finally:
         second_instance.close()
