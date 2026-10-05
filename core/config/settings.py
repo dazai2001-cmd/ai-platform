@@ -52,6 +52,8 @@ class Settings:
     # Ollama
     OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://host.docker.internal:11434")
     OLLAMA_TIMEOUT_SECONDS = int(os.getenv("OLLAMA_TIMEOUT_SECONDS", "180"))
+    # -1 lets Ollama choose GPU offloading; 0 uses CPU inference.
+    OLLAMA_NUM_GPU = int(os.getenv("OLLAMA_NUM_GPU", "-1"))
     LLM_MAX_TOKENS = int(os.getenv("LLM_MAX_TOKENS", "768"))
 
     # Cloud LLM providers

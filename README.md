@@ -35,7 +35,7 @@ Live frontend:
 https://symphonious-cat-2873fe.netlify.app/auth?next=%2Fchat
 ```
 
-The deployed version uses a same-origin Next.js proxy from Netlify to the Render backend so Secure HttpOnly authentication cookies remain reliable. Local development still supports Ollama-based inference and SQLite persistence.
+The deployed version uses a same-origin Next.js proxy from Netlify to the Render backend so Secure HttpOnly authentication cookies remain reliable. Local development supports Ollama inference and local PostgreSQL, with SQLite also available.
 
 ---
 
@@ -111,7 +111,7 @@ Monitor query volume, success rate, average and p95 latency, recent requests, an
 - Execute queries against uploaded datasets
 - Return rows and chart-ready results for visualisation
 - Preserve follow-up context within each BI session without sending raw sample rows to cloud models
-- Persist user-scoped dataset uploads in Supabase PostgreSQL in cloud mode, with SQLite parity locally
+- Persist user-scoped dataset uploads in PostgreSQL in local and cloud modes, with SQLite parity
 - Reload, switch, and delete datasets safely across API restarts and multiple workers
 
 ### Persistent Memory
@@ -119,7 +119,7 @@ Monitor query volume, success rate, average and p95 latency, recent requests, an
 - Store conversation messages by session
 - Persist user facts and memory entries
 - Retrieve previous conversation history for context-aware responses
-- Supabase PostgreSQL persistence in cloud deployments, with SQLite retained for local development and tests
+- PostgreSQL persistence in local and cloud deployments, with SQLite retained as an option for development and tests
 - Redis-backed memory/cache layer for Docker/local runtime
 
 ### Career Copilot
@@ -607,12 +607,43 @@ or in its secret manager, never in image build arguments.
 
 ## Running Without Docker
 
+### Local PostgreSQL
+
+For native development, the frontend uses its same-origin API proxy. If port `5000` is occupied, choose a free `PORT` in the root `.env` and set `API_INTERNAL_URL=http://127.0.0.1:<PORT>` in `frontend/nextjs-app/.env.local`. Leave `NEXT_PUBLIC_API_URL` blank to use the proxy.
+
+With PostgreSQL installed and the project's Python environment activated, configure and start a project database before starting the backend:
+
+```bash
+python -m scripts.setup_local_postgres
+```
+
+The setup command finds PostgreSQL on PATH or under `C:\Program Files\PostgreSQL` on Windows. It starts a project-owned instance on `127.0.0.1:5433`, generates credentials, and saves its data and connection metadata under the ignored `data/processed/local-postgres` directory. The application connects as a role without superuser privileges. The command copies existing SQLite application records into an empty PostgreSQL database, verifies the copied values, and retains the original SQLite file and a backup.
+
+The ignored `.env` file receives the PostgreSQL connection settings after verification. Run the same setup command after restarting your computer to start the project database again. To stop it while retaining its data:
+
+```bash
+python -m scripts.setup_local_postgres --stop
+```
+
+If an older SQLite database contains scoring queue entries for deleted jobs, the copy stops without committing. Rerun with `--archive-stale-tasks` to keep those entries in an ignored JSON archive and copy the remaining valid records. The original SQLite database and its snapshot remain available.
+
+To connect to an existing local development database instead:
+
+```bash
+python -m scripts.setup_local_postgres --existing
+```
+
+This asks for host, port, database, username, and a hidden password in the terminal. The selected database must already exist, and its application role must be able to create the private schema without having superuser privileges. SQLite records are copied only when the PostgreSQL application tables are empty. Unit tests can still select SQLite by setting `DATABASE_URL` to an empty string.
+
+These loopback database settings are for the native backend. A Docker backend must use a database address reachable from its container, such as `host.docker.internal` for a host database configured to accept container connections.
+
 ### Backend
 
 ```bash
 python -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
+python -m scripts.setup_local_postgres
 python -m apps.api.main
 ```
 
@@ -622,6 +653,7 @@ On Windows PowerShell:
 python -m venv .venv
 .venv\Scripts\Activate.ps1
 pip install -r requirements.txt
+python -m scripts.setup_local_postgres
 python -m apps.api.main
 ```
 
@@ -633,6 +665,10 @@ npm install
 npm run dev
 ```
 
+### Ollama GPU troubleshooting
+
+If Ollama reports `CUDA error: shared object initialization failed`, set `OLLAMA_NUM_GPU=0` in the root `.env` and restart the backend. This requests CPU inference for this application and can make replies slower. The default `-1` leaves GPU offloading to Ollama; restore it to re-enable automatic GPU usage. Both streamed and regular replies respect `LLM_MAX_TOKENS`.
+
 ---
 
 ## Local vs Cloud Runtime
@@ -643,7 +679,7 @@ This project supports two runtime modes.
 
 ### Local Mode
 
-Local mode runs the backend, frontend, Redis, FAISS/SQLite storage, and Ollama-hosted models on your machine.
+Local mode runs the backend, frontend, Redis, FAISS, PostgreSQL, and Ollama-hosted models on your machine. SQLite remains available by leaving `DATABASE_URL` blank.
 
 ```env
 AI_RUNTIME=local
@@ -751,6 +787,7 @@ https://symphonious-cat-2873fe.netlify.app/auth?next=%2Fchat
 AI_RUNTIME=local
 OLLAMA_BASE_URL=http://127.0.0.1:11434
 OLLAMA_TIMEOUT_SECONDS=180
+OLLAMA_NUM_GPU=-1
 LLM_MAX_TOKENS=768
 ```
 
@@ -968,6 +1005,7 @@ Recommended before production use:
 
 - The main project was designed as a local-first platform, with cloud mode added for hosted demos.
 - The public demo depends on free-tier Render/Netlify availability and may experience cold starts.
+- Chat allows up to 180 seconds for the first answer, then stops a stream after 30 seconds without further output. The hosted proxy is also subject to [Netlify's function execution limit](https://docs.netlify.com/build/functions/api/#streaming-responses); browser deadlines cannot extend that limit.
 - Local Ollama models require local compute resources.
 - RAG quality depends on document quality, chunking, embeddings, and retrieval relevance.
 - BI SQL generation is validated but still depends on model output quality.

@@ -3,10 +3,11 @@
 import { useEffect, useRef, useState } from "react";
 import { Download, Loader2, Send, Sparkles, Square } from "lucide-react";
 import clsx from "clsx";
+import { STREAM_INACTIVITY_TIMEOUT_MS, STREAM_START_TIMEOUT_MS } from "@/lib/request-timeouts";
 
-export const STREAM_INACTIVITY_TIMEOUT_MS = 30_000;
+export { STREAM_INACTIVITY_TIMEOUT_MS, STREAM_START_TIMEOUT_MS } from "@/lib/request-timeouts";
 
-type AbortReason = "stopped" | "timeout" | "unmount" | null;
+type AbortReason = "stopped" | "startup-timeout" | "timeout" | "unmount" | null;
 
 type ChatResult = {
   answer: string;
@@ -57,6 +58,8 @@ export interface Message {
   rows?: Record<string, any>[];
 }
 
+const EMPTY_MESSAGES: Message[] = [];
+
 interface Props {
   onSend: (message: string, signal?: AbortSignal) => Promise<ChatResult>;
   onStream?: (message: string, signal?: AbortSignal) => Promise<Response>;
@@ -75,7 +78,7 @@ export default function ChatWindow({
   onSend,
   onStream,
   streamMeta,
-  initialMessages = [],
+  initialMessages = EMPTY_MESSAGES,
   resetKey,
   onMessagesChange,
   disabled = false,
@@ -84,7 +87,8 @@ export default function ChatWindow({
   suggestions = [],
   renderExtra,
 }: Props) {
-  const [messages, setMessages] = useState<Message[]>(initialMessages);
+  const [messages, setRenderedMessages] = useState<Message[]>(initialMessages);
+  const messagesRef = useRef(initialMessages);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
   const bottomRef = useRef<HTMLDivElement>(null);
@@ -93,14 +97,22 @@ export default function ChatWindow({
   const pendingStreamContentRef = useRef("");
   const activeControllerRef = useRef<AbortController | null>(null);
   const activeReaderRef = useRef<ReadableStreamDefaultReader<Uint8Array> | null>(null);
-  const streamInactivityTimerRef = useRef<number | null>(null);
+  const streamTimerRef = useRef<number | null>(null);
   const abortReasonRef = useRef<AbortReason>(null);
   const mountedRef = useRef(true);
 
-  const clearStreamInactivityTimer = () => {
-    if (streamInactivityTimerRef.current !== null) {
-      window.clearTimeout(streamInactivityTimerRef.current);
-      streamInactivityTimerRef.current = null;
+  const setMessages = (update: Message[] | ((current: Message[]) => Message[])) => {
+    if (!mountedRef.current) return;
+    const next = typeof update === "function" ? update(messagesRef.current) : update;
+    messagesRef.current = next;
+    setRenderedMessages(next);
+    onMessagesChange?.(next);
+  };
+
+  const clearStreamTimer = () => {
+    if (streamTimerRef.current !== null) {
+      window.clearTimeout(streamTimerRef.current);
+      streamTimerRef.current = null;
     }
   };
 
@@ -122,29 +134,29 @@ export default function ChatWindow({
     const controller = activeControllerRef.current;
     if (!controller || controller.signal.aborted) return;
     abortReasonRef.current = reason;
-    clearStreamInactivityTimer();
+    clearStreamTimer();
     cancelStreamFrame();
     controller.abort();
     cancelActiveReader();
   };
 
-  const armStreamInactivityTimer = (controller: AbortController) => {
-    clearStreamInactivityTimer();
-    streamInactivityTimerRef.current = window.setTimeout(() => {
+  const armStreamTimer = (controller: AbortController, reason: "startup-timeout" | "timeout") => {
+    clearStreamTimer();
+    streamTimerRef.current = window.setTimeout(() => {
       if (activeControllerRef.current === controller && !controller.signal.aborted) {
-        abortActiveRequest("timeout");
+        abortActiveRequest(reason);
       }
-    }, STREAM_INACTIVITY_TIMEOUT_MS);
+    }, reason === "startup-timeout" ? STREAM_START_TIMEOUT_MS : STREAM_INACTIVITY_TIMEOUT_MS);
   };
 
   useEffect(() => {
-    setMessages(initialMessages);
-    setInput("");
-  }, [resetKey]);
+    messagesRef.current = initialMessages;
+    setRenderedMessages(initialMessages);
+  }, [initialMessages, resetKey]);
 
   useEffect(() => {
-    onMessagesChange?.(messages);
-  }, [messages, onMessagesChange]);
+    setInput("");
+  }, [resetKey]);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
@@ -162,7 +174,7 @@ export default function ChatWindow({
     return () => {
       mountedRef.current = false;
       abortActiveRequest("unmount");
-      clearStreamInactivityTimer();
+      clearStreamTimer();
       cancelStreamFrame();
       cancelActiveReader();
     };
@@ -221,9 +233,11 @@ export default function ChatWindow({
         {
           role: "assistant",
           content:
-            reason === "timeout"
-              ? "The response timed out after 30 seconds without activity. Please try again."
-              : "Response stopped.",
+            reason === "startup-timeout"
+              ? "The server took too long to start a response. Please try again."
+              : reason === "timeout"
+                ? "The response timed out after 30 seconds without activity. Please try again."
+                : "Response stopped.",
         },
       ]);
     };
@@ -254,9 +268,8 @@ export default function ChatWindow({
           { role: "assistant", content: "", route: streamMeta?.route, model: streamMeta?.model },
         ]);
 
-        armStreamInactivityTimer(controller);
+        armStreamTimer(controller, "startup-timeout");
         const res = await abortable(onStream(text, controller.signal), controller.signal);
-        armStreamInactivityTimer(controller);
         const reader = res.body?.getReader();
         if (!reader) throw new Error("No response stream returned.");
         activeReaderRef.current = reader;
@@ -267,11 +280,11 @@ export default function ChatWindow({
         while (true) {
           const { done, value } = await abortable(reader.read(), controller.signal);
           if (done) break;
-          armStreamInactivityTimer(controller);
           content += decoder.decode(value, { stream: true });
           if (content.trimStart().startsWith("[STREAM ERROR]:")) {
             throw new Error(content.replace("[STREAM ERROR]:", "").trim() || "Streaming request failed.");
           }
+          if (content.trim()) armStreamTimer(controller, "timeout");
           updateAssistantDraft(content);
         }
 
@@ -279,7 +292,7 @@ export default function ChatWindow({
         if (content.trimStart().startsWith("[STREAM ERROR]:")) {
           throw new Error(content.replace("[STREAM ERROR]:", "").trim() || "Streaming request failed.");
         }
-        clearStreamInactivityTimer();
+        clearStreamTimer();
         activeReaderRef.current = null;
         cancelStreamFrame();
         setMessages((current) => {
@@ -302,7 +315,7 @@ export default function ChatWindow({
       const res = await abortable(onSend(text, controller.signal), controller.signal);
       appendFinalAnswer(res);
     } catch (error) {
-      clearStreamInactivityTimer();
+      clearStreamTimer();
       cancelStreamFrame();
       cancelActiveReader();
 
@@ -334,7 +347,7 @@ export default function ChatWindow({
         },
       ]);
     } finally {
-      clearStreamInactivityTimer();
+      clearStreamTimer();
       cancelStreamFrame();
       cancelActiveReader();
       if (activeControllerRef.current === controller) {
@@ -471,7 +484,7 @@ export default function ChatWindow({
         <div className="app-panel flex items-end gap-3 rounded-md p-2">
           <textarea
             ref={inputRef}
-            className="app-input max-h-40 min-h-12 flex-1 resize-none rounded-md px-4 py-3 text-sm placeholder:text-muted-soft"
+            className="app-input max-h-40 min-h-12 min-w-0 flex-1 resize-none rounded-md px-4 py-3 text-sm placeholder:text-muted-soft"
             placeholder={placeholder}
             aria-label="Message"
             value={input}

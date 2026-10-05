@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { FileText, Loader2, RefreshCw, Trash2 } from "lucide-react";
 import { api } from "@/lib/api";
 
@@ -18,51 +18,79 @@ export default function DocumentsPage() {
   const [preview, setPreview] = useState<any>(null);
   const [loading, setLoading] = useState(true);
   const [message, setMessage] = useState("");
+  const [previewLoading, setPreviewLoading] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  const activeSourceRef = useRef<string | null>(null);
+  const previewRequestRef = useRef(0);
+  const loadRequestRef = useRef(0);
 
   const load = async () => {
+    const requestId = ++loadRequestRef.current;
     setLoading(true);
     setMessage("");
     try {
       const docs = await api.ragDocuments();
+      if (requestId !== loadRequestRef.current) return;
       setDocuments(docs);
-      if (active && !docs.some((doc: DocumentItem) => doc.source === active.source)) {
+      if (activeSourceRef.current && !docs.some((doc: DocumentItem) => doc.source === activeSourceRef.current)) {
+        previewRequestRef.current += 1;
+        activeSourceRef.current = null;
         setActive(null);
         setPreview(null);
+        setPreviewLoading(false);
       }
     } catch (error) {
-      setMessage(error instanceof Error ? error.message : "Failed to load documents");
+      if (requestId === loadRequestRef.current) setMessage(error instanceof Error ? error.message : "Failed to load documents");
     } finally {
-      setLoading(false);
+      if (requestId === loadRequestRef.current) setLoading(false);
     }
   };
 
   const openPreview = async (doc: DocumentItem) => {
+    const requestId = ++previewRequestRef.current;
+    activeSourceRef.current = doc.source;
     setActive(doc);
     setPreview(null);
+    setPreviewLoading(true);
     setMessage("");
     try {
-      setPreview(await api.ragDocumentPreview(doc.source));
+      const result = await api.ragDocumentPreview(doc.source);
+      if (requestId === previewRequestRef.current) setPreview(result);
     } catch (error) {
-      setMessage(error instanceof Error ? error.message : "Failed to load preview");
+      if (requestId === previewRequestRef.current) setMessage(error instanceof Error ? error.message : "Failed to load preview");
+    } finally {
+      if (requestId === previewRequestRef.current) setPreviewLoading(false);
     }
   };
 
   const deleteDoc = async (doc: DocumentItem) => {
     if (!window.confirm(`Delete ${doc.title} from the knowledge base?`)) return;
+    setDeleting(true);
     setMessage("");
     try {
       const res = await api.ragDeleteDocument(doc.source);
-      setMessage(`Deleted ${res.deleted_chunks ?? 0} chunks from ${doc.title}`);
-      setActive(null);
-      setPreview(null);
+      if (activeSourceRef.current === doc.source) {
+        previewRequestRef.current += 1;
+        activeSourceRef.current = null;
+        setActive(null);
+        setPreview(null);
+        setPreviewLoading(false);
+      }
       await load();
+      setMessage(`Deleted ${res.deleted_chunks ?? 0} chunks from ${doc.title}`);
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "Delete failed");
+    } finally {
+      setDeleting(false);
     }
   };
 
   useEffect(() => {
-    load();
+    void load();
+    return () => {
+      loadRequestRef.current += 1;
+      previewRequestRef.current += 1;
+    };
   }, []);
 
   return (
@@ -130,6 +158,7 @@ export default function DocumentsPage() {
             {active && (
               <button
                 onClick={() => deleteDoc(active)}
+                disabled={deleting}
                 className="grid h-9 w-9 place-items-center rounded-md border border-line text-muted transition hover:border-danger hover:text-danger-ink"
                 aria-label="Delete document"
                 title="Delete document"
@@ -143,13 +172,13 @@ export default function DocumentsPage() {
               <div className="rounded-md border border-dashed border-line px-4 py-16 text-center text-sm text-muted">
                 Select a document to preview extracted text.
               </div>
-            ) : !preview ? (
+            ) : previewLoading ? (
               <div className="grid h-48 place-items-center text-muted">
                 <Loader2 className="animate-spin" size={22} />
               </div>
             ) : (
               <pre className="max-h-[34rem] overflow-auto whitespace-pre-wrap rounded-md bg-canvas p-4 text-sm leading-6 text-ink-subtle">
-                {preview.text || "No preview text available."}
+                {preview?.text || "No preview text available."}
               </pre>
             )}
           </div>

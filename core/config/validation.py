@@ -50,6 +50,9 @@ def configuration_issues(config=settings) -> list[ConfigurationIssue]:
     if config.AI_RUNTIME not in {"local", "cloud"}:
         issues.append(ConfigurationIssue("AI_RUNTIME", "must be either 'local' or 'cloud'"))
 
+    if getattr(config, "OLLAMA_NUM_GPU", -1) < -1:
+        issues.append(ConfigurationIssue("OLLAMA_NUM_GPU", "must be -1 (automatic), 0 (CPU), or a positive GPU layer count"))
+
     positive_values = {
         "MAX_UPLOAD_BYTES": config.MAX_UPLOAD_BYTES,
         "MAX_JSON_BYTES": config.MAX_JSON_BYTES,

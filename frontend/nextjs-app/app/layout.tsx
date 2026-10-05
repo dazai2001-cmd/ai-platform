@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import "./globals.css";
 import Sidebar from "@/components/layout/Sidebar";
 import { AuthProvider } from "@/lib/auth";
+import { ChatStateProvider } from "@/lib/chat-state";
 
 export const metadata: Metadata = {
   title: "AI Platform",
@@ -15,8 +16,8 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         <AuthProvider>
           <div className="min-h-screen bg-canvas text-ink lg:flex">
             <Sidebar />
-            <main className="min-h-0 flex-1 overflow-hidden bg-canvas lg:min-h-dvh">
-              {children}
+            <main className="min-h-0 min-w-0 flex-1 overflow-hidden bg-canvas lg:min-h-dvh">
+              <ChatStateProvider>{children}</ChatStateProvider>
             </main>
           </div>
         </AuthProvider>

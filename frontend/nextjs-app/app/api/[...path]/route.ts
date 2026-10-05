@@ -1,6 +1,6 @@
 import { isIP } from "node:net";
 
-const API_INTERNAL_URL = process.env.API_INTERNAL_URL || "http://api:5000";
+const API_INTERNAL_URL = process.env.API_INTERNAL_URL || "http://127.0.0.1:5000";
 const API_AUTH_TOKEN = process.env.API_AUTH_TOKEN?.trim() || "";
 
 type Params = {
@@ -66,16 +66,22 @@ async function proxy(request: Request, { params }: Params) {
     init.duplex = "half";
   }
 
-  const upstream = await fetch(targetUrl(path, request), init);
-  const headers = new Headers(upstream.headers);
-  headers.delete("content-encoding");
-  headers.delete("content-length");
+  try {
+    const upstream = await fetch(targetUrl(path, request), init);
+    const headers = new Headers(upstream.headers);
+    headers.delete("content-encoding");
+    headers.delete("content-length");
 
-  return new Response(upstream.body, {
-    status: upstream.status,
-    statusText: upstream.statusText,
-    headers,
-  });
+    return new Response(upstream.body, {
+      status: upstream.status,
+      statusText: upstream.statusText,
+      headers,
+    });
+  } catch {
+    return Response.json({
+      error: "The backend API is unavailable. Check that it is running and try again.",
+    }, { status: 502, headers: { "Cache-Control": "no-store" } });
+  }
 }
 
 export const dynamic = "force-dynamic";

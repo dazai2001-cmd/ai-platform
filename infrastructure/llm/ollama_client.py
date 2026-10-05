@@ -14,6 +14,16 @@ class OllamaClient:
         self.base_url = settings.OLLAMA_BASE_URL.rstrip("/")
 
     @staticmethod
+    def _local_options(temperature: float, max_tokens: Optional[int] = None) -> dict:
+        options = {
+            "temperature": temperature,
+            "num_predict": max_tokens or settings.LLM_MAX_TOKENS,
+        }
+        if settings.OLLAMA_NUM_GPU >= 0:
+            options["num_gpu"] = settings.OLLAMA_NUM_GPU
+        return options
+
+    @staticmethod
     def _configured_cloud_models() -> set[str]:
         models: set[str] = set()
         if settings.GEMINI_API_KEY:
@@ -67,16 +77,12 @@ class OllamaClient:
         if provider == "openrouter":
             return self._generate_openrouter(provider_model, prompt, temperature, max_tokens, json_format)
 
-        max_tokens = max_tokens or settings.LLM_MAX_TOKENS
         payload = {
             "model": provider_model,
             "prompt": prompt,
             "stream": False,
             "think": False,
-            "options": {
-                "temperature": temperature,
-                "num_predict": max_tokens,
-            },
+            "options": self._local_options(temperature, max_tokens),
         }
         if json_format:
             payload["format"] = "json"
@@ -106,7 +112,7 @@ class OllamaClient:
             "prompt": prompt,
             "stream": True,
             "think": False,
-            "options": {"temperature": temperature}
+            "options": self._local_options(temperature)
         }
 
         try:

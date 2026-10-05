@@ -1,7 +1,14 @@
-import { act, render, screen, waitFor } from "@testing-library/react";
+import { act, render as renderComponent, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import DashboardPage from "./page";
+import { ChatStateProvider } from "@/lib/chat-state";
+
+vi.mock("@/lib/auth", () => ({ useAuth: () => ({ user: null, loading: false, authRequired: false }) }));
+
+function render(element: React.ReactNode) {
+  return renderComponent(<ChatStateProvider>{element}</ChatStateProvider>);
+}
 
 const apiMocks = vi.hoisted(() => ({
   biAsk: vi.fn(),

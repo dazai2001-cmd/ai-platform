@@ -94,7 +94,7 @@ class WorkspaceRouter:
         try:
             response = ollama.generate(
                 model,
-                _ACTION_PROMPT.format(query=query),
+                _ACTION_PROMPT.replace("{query}", query),
                 temperature=0,
                 max_tokens=220,
                 json_format=True,

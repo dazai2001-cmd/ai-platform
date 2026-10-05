@@ -11,62 +11,74 @@ export default function SettingsPage() {
   const [saving, setSaving] = useState(false);
   const [saveStatus, setSaveStatus] = useState("");
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState("");
+  const [resetting, setResetting] = useState(false);
   const saveRequestRef = useRef(0);
+  const saveQueueRef = useRef<Promise<void>>(Promise.resolve());
+  const loadRequestRef = useRef(0);
 
   const refresh = async () => {
+    const requestId = ++loadRequestRef.current;
     setLoading(true);
-    try {
-      const [h, s, m] = await Promise.all([api.health(), api.analyticsSummary(168), api.modelSettings()]);
-      setHealth(h);
-      setStats(s);
-      setModelSettings(m);
-    } catch {
-      setHealth(null);
-      setStats(null);
-      setModelSettings(null);
-    } finally {
-      setLoading(false);
-    }
+    const results = await Promise.allSettled([api.health(), api.analyticsSummary(168), api.modelSettings()]);
+    if (requestId !== loadRequestRef.current) return;
+    const [h, s, m] = results;
+    setHealth(h.status === "fulfilled" ? h.value : null);
+    setStats(s.status === "fulfilled" ? s.value : null);
+    setModelSettings(m.status === "fulfilled" ? m.value : null);
+    const sections = ["runtime health", "analytics", "model settings"];
+    const failed = results.flatMap((result, index) => result.status === "rejected" ? [sections[index]] : []);
+    setLoadError(failed.length ? `Could not load ${failed.join(", ")}. Refresh to retry.` : "");
+    setLoading(false);
   };
 
   useEffect(() => {
-    refresh();
+    void refresh();
+    return () => { loadRequestRef.current += 1; };
   }, []);
 
   const cards = [
     ["Total Queries", stats?.total_queries ?? 0],
-    ["Success Rate", stats?.success_rate ? `${(stats.success_rate * 100).toFixed(0)}%` : "-"],
-    ["Avg Latency", stats?.avg_latency_ms ? `${stats.avg_latency_ms}ms` : "-"],
-    ["P95 Latency", stats?.p95_latency_ms ? `${stats.p95_latency_ms}ms` : "-"],
+    ["Success Rate", stats?.success_rate != null ? `${(stats.success_rate * 100).toFixed(0)}%` : "-"],
+    ["Avg Latency", stats?.avg_latency_ms != null ? `${stats.avg_latency_ms}ms` : "-"],
+    ["P95 Latency", stats?.p95_latency_ms != null ? `${stats.p95_latency_ms}ms` : "-"],
   ];
 
-  const taskModels = modelSettings?.task_models || health?.task_models || {};
-  const availableModels = modelSettings?.available_models || health?.models || [];
-  const runtime = health?.runtime || (health?.cloud_models ? "cloud" : "local");
+  const taskModels = modelSettings?.task_models || {};
+  const availableModels: string[] = modelSettings?.available_models || [];
+  const runtime = health?.runtime || "unknown";
   const isCloud = runtime === "cloud";
-  const providerStatus = health?.provider_status || {};
+  const providerReady = health?.checks?.model_provider === true;
+  const providerModels = availableModels.reduce<Record<string, number>>((providers, model) => {
+    const provider = model.split(":")[0];
+    providers[provider] = (providers[provider] || 0) + 1;
+    return providers;
+  }, {});
 
   const persistTaskModels = async (nextTaskModels: Record<string, string>) => {
     const requestId = saveRequestRef.current + 1;
     saveRequestRef.current = requestId;
     setSaving(true);
     setSaveStatus("Saving...");
-    try {
-      const saved = await api.updateModelSettings(nextTaskModels);
-      if (saveRequestRef.current === requestId) {
-        setModelSettings(saved);
-        setHealth(await api.health());
-        setSaveStatus("Saved");
+    const write = async () => {
+      try {
+        const saved = await api.updateModelSettings(nextTaskModels);
+        if (saveRequestRef.current === requestId) {
+          setModelSettings(saved);
+          setSaveStatus("Saved");
+        }
+      } catch {
+        if (saveRequestRef.current === requestId) {
+          setSaveStatus("Could not save");
+        }
+      } finally {
+        if (saveRequestRef.current === requestId) {
+          setSaving(false);
+        }
       }
-    } catch {
-      if (saveRequestRef.current === requestId) {
-        setSaveStatus("Could not save");
-      }
-    } finally {
-      if (saveRequestRef.current === requestId) {
-        setSaving(false);
-      }
-    }
+    };
+    saveQueueRef.current = saveQueueRef.current.then(write, write);
+    await saveQueueRef.current;
   };
 
   const setTaskModel = (task: string, model: string) => {
@@ -84,13 +96,16 @@ export default function SettingsPage() {
   };
 
   const resetModels = async () => {
+    setResetting(true);
     setSaving(true);
     setSaveStatus("Resetting...");
     try {
       setModelSettings(await api.resetModelSettings());
-      setHealth(await api.health());
       setSaveStatus("Defaults restored");
+    } catch {
+      setSaveStatus("Could not reset");
     } finally {
+      setResetting(false);
       setSaving(false);
     }
   };
@@ -104,6 +119,7 @@ export default function SettingsPage() {
         </div>
         <button
           onClick={refresh}
+          disabled={loading || saving}
           className="flex items-center gap-2 rounded-md border border-line px-3 py-2 text-sm text-ink-subtle transition hover:border-line-strong hover:text-ink"
         >
           <RefreshCw size={15} className={loading ? "animate-spin" : ""} />
@@ -111,23 +127,25 @@ export default function SettingsPage() {
         </button>
       </div>
 
+      {loadError && <div role="alert" className="mb-4 rounded-md border border-danger/30 bg-danger/10 px-3 py-2 text-sm text-danger-ink">{loadError}</div>}
+
       <div className="grid gap-4 lg:grid-cols-[1fr_1fr]">
         <section className="rounded-md border border-line-soft bg-panel/70 p-5">
-          <h2 className="mb-4 text-sm font-semibold text-ink">{isCloud ? "Cloud Models" : "Ollama"}</h2>
+          <h2 className="mb-4 text-sm font-semibold text-ink">{isCloud ? "Cloud Models" : runtime === "local" ? "Ollama" : "AI Models"}</h2>
           <div className="mb-4 flex items-center gap-2">
-            {health?.status === "ok" ? (
+            {providerReady ? (
               <CheckCircle size={17} className="text-success-ink" />
             ) : (
               <XCircle size={17} className="text-danger-ink" />
             )}
             <span className="text-sm text-ink-subtle">
-              {health?.status === "ok" ? (isCloud ? "Cloud runtime ready" : "Connected") : "Not reachable"}
+              {providerReady ? (isCloud ? "Cloud runtime ready" : "Connected") : "Not reachable"}
             </span>
           </div>
           <p className="mb-3 text-xs uppercase tracking-wide text-muted-soft">Runtime: {runtime}</p>
           <div className="flex flex-wrap gap-2">
-            {health?.models?.length ? (
-              health.models.map((m: string) => (
+            {availableModels.length ? (
+              availableModels.map((m: string) => (
                 <span key={m} className="rounded-md bg-soft px-2 py-1 text-xs text-ink-subtle">{m}</span>
               ))
             ) : (
@@ -136,11 +154,11 @@ export default function SettingsPage() {
           </div>
           {isCloud && (
             <div className="mt-4 space-y-2 border-t border-line-soft pt-4">
-              {Object.entries(providerStatus).map(([provider, status]: [string, any]) => (
+              {Object.entries(providerModels).map(([provider, count]) => (
                 <div key={provider} className="flex items-center justify-between gap-3 text-xs">
                   <span className="capitalize text-muted">{provider}</span>
-                  <span className={status?.api_key && status?.models ? "text-success-ink" : "text-warning-ink"}>
-                    {status?.api_key ? `${status?.models || 0} models configured` : "API key missing"}
+                  <span className="text-ink-subtle">
+                    {count} models configured
                   </span>
                 </div>
               ))}
@@ -170,14 +188,14 @@ export default function SettingsPage() {
             <div className="flex gap-2">
               <button
                 onClick={resetModels}
-                disabled={saving}
+                disabled={saving || loading || !modelSettings}
                 className="rounded-md border border-line px-3 py-2 text-sm text-ink-subtle transition hover:border-line-strong hover:text-ink disabled:opacity-50"
               >
                 Reset
               </button>
               <button
                 onClick={saveModels}
-                disabled={saving}
+                disabled={saving || loading || !modelSettings}
                 className="flex items-center gap-2 rounded-md bg-brand px-3 py-2 text-sm font-medium text-white transition hover:bg-brand-hover disabled:opacity-50"
               >
                 <RefreshCw size={15} className={saving ? "animate-spin" : ""} />
@@ -191,8 +209,9 @@ export default function SettingsPage() {
                 <span className="mb-2 block text-xs uppercase tracking-wide text-muted-soft">{task}</span>
                 <select
                   value={model as string}
+                  disabled={loading || resetting}
                   onChange={(e) => setTaskModel(task, e.target.value)}
-                  className="w-full rounded-md border border-line bg-panel px-3 py-2 text-sm text-ink outline-none focus:border-analytic"
+                  className="w-full rounded-md border border-line bg-panel px-3 py-2 text-sm text-ink outline-hidden focus:border-analytic"
                 >
                   {[model as string, ...availableModels.filter((m: string) => m !== model)].map((option: string) => (
                     <option key={option} value={option}>{option}</option>

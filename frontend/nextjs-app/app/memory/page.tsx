@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Loader2, Plus, RefreshCw, Trash2 } from "lucide-react";
 import { api } from "@/lib/api";
 
@@ -20,49 +20,94 @@ export default function MemoryPage() {
   const [newFact, setNewFact] = useState("");
   const [loading, setLoading] = useState(true);
   const [message, setMessage] = useState("");
+  const [historyLoading, setHistoryLoading] = useState(false);
+  const [mutating, setMutating] = useState(false);
+  const mutationRef = useRef(false);
+  const activeSessionRef = useRef("");
+  const historyRequestRef = useRef(0);
+  const loadRequestRef = useRef(0);
 
   const load = async () => {
+    const requestId = ++loadRequestRef.current;
     setLoading(true);
     setMessage("");
     try {
       const [f, s] = await Promise.all([api.memoryFacts(), api.memorySessions()]);
+      if (requestId !== loadRequestRef.current) return;
       setFacts(f);
       setSessions(s);
     } catch (error) {
-      setMessage(error instanceof Error ? error.message : "Failed to load memory");
+      if (requestId === loadRequestRef.current) setMessage(error instanceof Error ? error.message : "Failed to load memory");
     } finally {
-      setLoading(false);
+      if (requestId === loadRequestRef.current) setLoading(false);
     }
   };
 
   const openSession = async (sessionId: string) => {
+    const requestId = ++historyRequestRef.current;
+    activeSessionRef.current = sessionId;
     setActiveSession(sessionId);
-    setHistory(await api.getHistory(sessionId));
+    setHistory([]);
+    setHistoryLoading(true);
+    setMessage("");
+    try {
+      const result = await api.getHistory(sessionId);
+      if (requestId === historyRequestRef.current) setHistory(result);
+    } catch (error) {
+      if (requestId === historyRequestRef.current) setMessage(error instanceof Error ? error.message : "Failed to load conversation");
+    } finally {
+      if (requestId === historyRequestRef.current) setHistoryLoading(false);
+    }
+  };
+
+  const mutate = async (action: () => Promise<void>) => {
+    if (mutationRef.current) return;
+    mutationRef.current = true;
+    setMutating(true);
+    setMessage("");
+    try {
+      await action();
+      await load();
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Could not update memory");
+    } finally {
+      mutationRef.current = false;
+      setMutating(false);
+    }
   };
 
   const addFact = async () => {
     if (!newFact.trim()) return;
-    await api.addMemoryFact(newFact.trim());
-    setNewFact("");
-    await load();
+    const draft = newFact;
+    await mutate(async () => {
+      await api.addMemoryFact(draft.trim());
+      setNewFact((current) => current === draft ? "" : current);
+    });
   };
 
   const deleteFact = async (id: string) => {
-    await api.deleteMemoryFact(id);
-    await load();
+    await mutate(async () => { await api.deleteMemoryFact(id); });
   };
 
   const clearSession = async (sessionId: string) => {
-    await api.clearHistory(sessionId);
-    if (activeSession === sessionId) {
-      setActiveSession("");
-      setHistory([]);
-    }
-    await load();
+    await mutate(async () => {
+      await api.clearHistory(sessionId);
+      if (activeSessionRef.current === sessionId) {
+        historyRequestRef.current += 1;
+        activeSessionRef.current = "";
+        setActiveSession("");
+        setHistory([]);
+        setHistoryLoading(false);
+      }
+    });
   };
 
   useEffect(() => {
-    load();
+    void load();
+    return () => {
+      loadRequestRef.current += 1;
+      historyRequestRef.current += 1;
+    };
   }, []);
 
   return (
@@ -81,7 +126,7 @@ export default function MemoryPage() {
         </button>
       </div>
 
-      {message && <div className="mb-4 rounded-md border border-danger/30 bg-danger/10 px-3 py-2 text-sm text-danger-ink">{message}</div>}
+      {message && <div role="alert" className="mb-4 rounded-md border border-danger/30 bg-danger/10 px-3 py-2 text-sm text-danger-ink">{message}</div>}
 
       <section className="mb-4 rounded-md border border-line-soft bg-panel/60 p-4">
         <h2 className="mb-3 text-sm font-semibold text-ink">Things To Remember</h2>
@@ -92,12 +137,12 @@ export default function MemoryPage() {
             onKeyDown={(e) => {
               if (e.key === "Enter") addFact();
             }}
-            className="min-w-0 flex-1 rounded-md border border-line bg-panel px-3 py-2 text-sm text-ink outline-none focus:border-analytic"
+            className="min-w-0 flex-1 rounded-md border border-line bg-panel px-3 py-2 text-sm text-ink outline-hidden focus:border-analytic"
             placeholder="Example: I prefer concise technical explanations."
           />
           <button
             onClick={addFact}
-            disabled={!newFact.trim()}
+            disabled={mutating || !newFact.trim()}
             className="grid h-10 w-10 place-items-center rounded-md bg-brand text-white transition hover:bg-brand-hover disabled:opacity-40"
             aria-label="Add memory"
             title="Add memory"
@@ -114,6 +159,7 @@ export default function MemoryPage() {
                 <p className="min-w-0 flex-1 text-sm leading-6 text-ink-subtle">{fact.content}</p>
                 <button
                   onClick={() => deleteFact(fact.id)}
+                  disabled={mutating}
                   className="grid h-8 w-8 shrink-0 place-items-center rounded-md text-muted transition hover:bg-soft hover:text-danger-ink"
                   aria-label="Delete memory"
                   title="Delete memory"
@@ -158,6 +204,7 @@ export default function MemoryPage() {
             {activeSession && (
               <button
                 onClick={() => clearSession(activeSession)}
+                disabled={mutating}
                 className="grid h-9 w-9 place-items-center rounded-md border border-line text-muted transition hover:border-danger hover:text-danger-ink"
                 aria-label="Clear session"
                 title="Clear session"
@@ -171,6 +218,8 @@ export default function MemoryPage() {
               <div className="rounded-md border border-dashed border-line px-4 py-16 text-center text-sm text-muted">
                 Select a session to view its messages.
               </div>
+            ) : historyLoading ? (
+              <div role="status" aria-label="Loading conversation" className="grid h-48 place-items-center text-muted"><Loader2 className="animate-spin" size={22} /></div>
             ) : (
               <div className="space-y-3">
                 {history.map((msg, index) => (

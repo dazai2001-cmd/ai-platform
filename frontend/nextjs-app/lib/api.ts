@@ -1,6 +1,6 @@
+import { REQUEST_TIMEOUT_MS, STREAM_START_TIMEOUT_MS } from "./request-timeouts";
+
 const CONFIGURED_BASE = process.env.NEXT_PUBLIC_API_URL || "";
-const REQUEST_TIMEOUT_MS = 180_000;
-const STREAM_CONNECTION_TIMEOUT_MS = 60_000;
 
 type RequestDeadline = {
   signal: AbortSignal;
@@ -93,7 +93,7 @@ function headers(contentType?: string) {
   return h;
 }
 
-async function parseResponse(res: Response, deadline: RequestDeadline) {
+async function parseResponse(res: Response, deadline: RequestDeadline, allowDegradedHealth = false) {
   let data: any = {};
   try {
     data = await deadline.race(res.json());
@@ -102,13 +102,15 @@ async function parseResponse(res: Response, deadline: RequestDeadline) {
     // timeout or caller-initiated abort while the body is being parsed.
     if (deadline.signal.aborted) throw error;
   }
-  if (!res.ok) {
-    throw new Error(data.error || `Request failed (${res.status})`);
+  const degradedHealth = allowDegradedHealth && res.status === 503
+    && data?.status === "degraded" && data.checks && typeof data.checks === "object";
+  if (!res.ok && !degradedHealth) {
+    throw new Error(data?.error || `Request failed (${res.status})`);
   }
   return data;
 }
 
-async function request(path: string, init: RequestInit = {}) {
+async function request(path: string, init: RequestInit = {}, allowDegradedHealth = false) {
   const deadline = createDeadline(init.signal || undefined, REQUEST_TIMEOUT_MS);
   try {
     const res = await deadline.race(fetch(`${baseUrl()}${path}`, {
@@ -116,7 +118,7 @@ async function request(path: string, init: RequestInit = {}) {
       credentials: "include",
       signal: deadline.signal,
     }));
-    return await parseResponse(res, deadline);
+    return await parseResponse(res, deadline, allowDegradedHealth);
   } finally {
     deadline.cleanup();
   }
@@ -132,7 +134,7 @@ async function post(path: string, body: object, signal?: AbortSignal) {
 }
 
 async function postRaw(path: string, body: object, externalSignal?: AbortSignal) {
-  const deadline = createDeadline(externalSignal, STREAM_CONNECTION_TIMEOUT_MS);
+  const deadline = createDeadline(externalSignal, STREAM_START_TIMEOUT_MS);
   let connected = false;
   try {
     const res = await deadline.race(fetch(`${baseUrl()}${path}`, {
@@ -154,8 +156,8 @@ async function postRaw(path: string, body: object, externalSignal?: AbortSignal)
   }
 }
 
-async function get(path: string) {
-  return request(path, { headers: headers() });
+async function get(path: string, allowDegradedHealth = false) {
+  return request(path, { headers: headers() }, allowDegradedHealth);
 }
 
 async function upload(path: string, formData: FormData) {
@@ -195,8 +197,8 @@ export const api = {
     request(`/api/chat/conversations/${id}`, { method: "DELETE", headers: headers() }),
 
   // RAG
-  ragAsk: (question: string, sessionId?: string) =>
-    post("/api/rag/ask", { question, session_id: sessionId }),
+  ragAsk: (question: string, sessionId?: string, signal?: AbortSignal) =>
+    post("/api/rag/ask", { question, session_id: sessionId }, signal),
   ragAskStream: (question: string, sessionId?: string, signal?: AbortSignal) =>
     postRaw("/api/rag/ask/stream", { question, session_id: sessionId }, signal),
   ragUploadPdf: (file: File) => {
@@ -247,7 +249,7 @@ export const api = {
     request(`/api/memory/${sessionId}`, { method: "DELETE", headers: headers() }),
 
   // Health & analytics
-  health: () => get("/api/health"),
+  health: () => get("/api/health", true),
   warmup: (model?: string) => post("/api/health/warmup", { model }),
   modelSettings: () => get("/api/settings/models"),
   updateModelSettings: (taskModels: Record<string, string>) =>

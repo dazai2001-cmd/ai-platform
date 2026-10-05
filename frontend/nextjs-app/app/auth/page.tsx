@@ -100,7 +100,7 @@ function AuthPageContent() {
               type="email"
               autoComplete="email"
               required
-              className="mt-1 w-full rounded-md border border-line-soft bg-panel px-3 py-2 text-sm text-ink outline-none transition focus:border-analytic/70"
+              className="mt-1 w-full rounded-md border border-line-soft bg-panel px-3 py-2 text-sm text-ink outline-hidden transition focus:border-analytic/70"
             />
           </label>
 
@@ -113,7 +113,7 @@ function AuthPageContent() {
               autoComplete={mode === "login" ? "current-password" : "new-password"}
               required
               minLength={8}
-              className="mt-1 w-full rounded-md border border-line-soft bg-panel px-3 py-2 text-sm text-ink outline-none transition focus:border-analytic/70"
+              className="mt-1 w-full rounded-md border border-line-soft bg-panel px-3 py-2 text-sm text-ink outline-hidden transition focus:border-analytic/70"
             />
           </label>
 

@@ -22,17 +22,7 @@ import {
 import clsx from "clsx";
 import ChatWindow, { type Message } from "@/components/chat/ChatWindow";
 import { api } from "@/lib/api";
-
-type Conversation = {
-  id: string;
-  title: string;
-  messages: Message[];
-  createdAt: number;
-  updatedAt: number;
-  messageCount?: number;
-};
-
-type ChatMode = "workspace" | "general";
+import { conversationTimestamp, createLocalConversation, useChatState, type ChatMode, type Conversation } from "@/lib/chat-state";
 type ConversationSyncStatus = "syncing" | "synced" | "offline";
 
 const CONVERSATION_LOAD_TIMEOUT_MS = 12_000;
@@ -82,17 +72,6 @@ const toolCards = [
   { href: "/settings", label: "Settings", icon: Settings, detail: "Model selection" },
 ];
 
-function createLocalConversation(): Conversation {
-  const now = Date.now();
-  return {
-    id: crypto.randomUUID(),
-    title: "New chat",
-    messages: [],
-    createdAt: now,
-    updatedAt: now,
-  };
-}
-
 function titleFromMessages(messages: Message[]) {
   const firstUser = messages.find((message) => message.role === "user")?.content.trim();
   if (!firstUser) return "New chat";
@@ -100,12 +79,22 @@ function titleFromMessages(messages: Message[]) {
 }
 
 export default function ChatPage() {
-  const [initialConversation] = useState(createLocalConversation);
-  const [conversations, setConversations] = useState<Conversation[]>(() => [initialConversation]);
-  const [activeId, setActiveId] = useState(initialConversation.id);
-  const [mode, setMode] = useState<ChatMode>("workspace");
-  const [syncStatus, setSyncStatus] = useState<ConversationSyncStatus>("syncing");
-  const [syncError, setSyncError] = useState("");
+  const { state, updateState, ready, saving, saveError, flushConversations, waitForSave } = useChatState();
+  const { conversations, activeId, mode } = state.workspace;
+  const [initialConversation] = useState(() => conversations.find((item) => item.id === activeId) || conversations[0]);
+  const [loadStatus, setLoadStatus] = useState<ConversationSyncStatus>("syncing");
+  const [loadError, setLoadError] = useState("");
+  const syncStatus = saveError ? "offline" : saving || conversations.some((item) => item.pendingSync) ? "syncing" : loadStatus;
+  const syncError = saveError || loadError;
+  const setConversations = useCallback((update: (current: Conversation[]) => Conversation[]) => {
+    updateState((current) => ({ ...current, workspace: { ...current.workspace, conversations: update(current.workspace.conversations) } }));
+  }, [updateState]);
+  const setActiveId = useCallback((id: string) => {
+    updateState((current) => ({ ...current, workspace: { ...current.workspace, activeId: id } }));
+  }, [updateState]);
+  const setMode = (next: ChatMode) => {
+    updateState((current) => ({ ...current, workspace: { ...current.workspace, mode: next } }));
+  };
   const syncRunRef = useRef(0);
   const conversationsRef = useRef(conversations);
   const activeIdRef = useRef(activeId);
@@ -129,22 +118,31 @@ export default function ChatPage() {
   const loadRemoteConversations = useCallback(async () => {
     const runId = syncRunRef.current + 1;
     syncRunRef.current = runId;
-    setSyncStatus("syncing");
-    setSyncError("");
+    setLoadStatus("syncing");
+    setLoadError("");
+    void flushConversations();
 
     try {
       const saved = await withConversationTimeout(api.chatConversations());
       if (syncRunRef.current !== runId) return;
 
       if (Array.isArray(saved) && saved.length > 0) {
-        const list = saved.map((item: any) => ({
-          id: item.id,
-          title: item.title,
-          messages: [],
-          createdAt: item.createdAt,
-          updatedAt: item.updatedAt,
-          messageCount: item.messages,
-        }));
+        const list = saved.map((item: any): Conversation => {
+          const local = conversationsRef.current.find((conversation) => conversation.id === item.id);
+          const updatedAt = conversationTimestamp(item.updatedAt);
+          if (local && (local.pendingSync || (local.loaded && local.updatedAt >= updatedAt))) {
+            return { ...local, messageCount: item.messages };
+          }
+          return {
+            id: item.id,
+            title: item.title,
+            messages: local?.messages || [],
+            createdAt: conversationTimestamp(item.createdAt),
+            updatedAt,
+            messageCount: item.messages,
+            loaded: false,
+          };
+        });
         const remoteIds = new Set(list.map((conversation: Conversation) => conversation.id));
         const localDrafts = conversationsRef.current.filter(
           (conversation) =>
@@ -158,17 +156,20 @@ export default function ChatPage() {
 
         conversationsRef.current = merged;
         activeIdRef.current = nextActiveId;
-        setConversations(merged);
+        setConversations(() => merged);
         setActiveId(nextActiveId);
 
-        const historyId = remoteIds.has(nextActiveId) ? nextActiveId : list[0].id;
-        const full = await withConversationTimeout(api.getChatConversation(historyId));
-        if (syncRunRef.current !== runId) return;
-        setConversations((current) =>
-          current.map((conversation) =>
-            conversation.id === full.id ? { ...conversation, messages: full.messages || [] } : conversation,
-          ),
-        );
+        const selected = merged.find((conversation) => conversation.id === nextActiveId);
+        if (selected && !selected.loaded) {
+          const full = await withConversationTimeout(api.getChatConversation(selected.id));
+          if (syncRunRef.current !== runId) return;
+          setConversations((current) =>
+            current.map((conversation) =>
+              conversation.id === full.id && !conversation.loaded && !conversation.pendingSync
+                ? { ...conversation, messages: full.messages || [], loaded: true } : conversation,
+            ),
+          );
+        }
       } else {
         const created = await withConversationTimeout(ensureInitialRemoteConversation());
         if (syncRunRef.current !== runId) return;
@@ -178,27 +179,31 @@ export default function ChatPage() {
               ? {
                   ...conversation,
                   ...created,
+                  createdAt: conversationTimestamp(created.createdAt),
+                  updatedAt: conversationTimestamp(created.updatedAt),
                   messages: conversation.messages.length ? conversation.messages : created.messages || [],
+                  loaded: true,
                 }
               : conversation,
           ),
         );
       }
 
-      setSyncStatus("synced");
+      setLoadStatus("synced");
     } catch (error) {
       if (syncRunRef.current !== runId) return;
-      setSyncStatus("offline");
-      setSyncError(error instanceof Error ? error.message : "Conversation sync failed.");
+      setLoadStatus("offline");
+      setLoadError(error instanceof Error ? error.message : "Conversation sync failed.");
     }
-  }, [ensureInitialRemoteConversation, initialConversation.id]);
+  }, [ensureInitialRemoteConversation, initialConversation.id, setConversations, setActiveId, flushConversations]);
 
   useEffect(() => {
+    if (!ready) return;
     void loadRemoteConversations();
     return () => {
       syncRunRef.current += 1;
     };
-  }, [loadRemoteConversations]);
+  }, [loadRemoteConversations, ready]);
 
   const activeConversation = useMemo(
     () => conversations.find((conversation) => conversation.id === activeId),
@@ -206,28 +211,27 @@ export default function ChatPage() {
   );
 
   const startNewChat = () => {
-    const local = createLocalConversation();
-    setConversations((current) => [local, ...current]);
-    setActiveId(local.id);
-    api.createChatConversation(local.id, local.title).catch(() => {});
+    const local = { ...createLocalConversation(), pendingSync: true };
+    updateState((current) => ({
+      ...current,
+      workspace: { ...current.workspace, conversations: [local, ...current.workspace.conversations], activeId: local.id },
+    }));
   };
 
   const deleteConversation = (id: string) => {
-    api.deleteChatConversation(id).catch(() => {});
-    setConversations((current) => {
-      const remaining = current.filter((conversation) => conversation.id !== id);
-      if (activeId === id) {
-        if (remaining[0]) {
-          setActiveId(remaining[0].id);
-        } else {
-          const next = createLocalConversation();
-          setActiveId(next.id);
-          api.createChatConversation(next.id, next.title).catch(() => {});
-          return [next];
-        }
-      }
-      return remaining;
+    updateState((current) => {
+      const remaining = current.workspace.conversations.filter((conversation) => conversation.id !== id);
+      if (!remaining.length) remaining.push({ ...createLocalConversation(), pendingSync: true });
+      return {
+        ...current,
+        workspace: {
+          ...current.workspace,
+          conversations: remaining,
+          activeId: current.workspace.activeId === id ? remaining[0].id : current.workspace.activeId,
+        },
+      };
     });
+    void waitForSave(id).then(() => api.deleteChatConversation(id)).catch(() => {});
   };
 
   const updateActiveMessages = useCallback((messages: Message[]) => {
@@ -239,30 +243,24 @@ export default function ChatPage() {
               title: titleFromMessages(messages),
               messages,
               updatedAt: Date.now(),
+              loaded: true,
+              pendingSync: true,
             }
           : conversation
       )
     );
-  }, [activeId]);
-
-  useEffect(() => {
-    const active = conversations.find((conversation) => conversation.id === activeId);
-    if (!active || active.messages.length === 0) return;
-    const timeout = window.setTimeout(() => {
-      api.saveChatConversation(active.id, active.title, active.messages).catch(() => {});
-    }, 400);
-    return () => window.clearTimeout(timeout);
-  }, [activeId, conversations]);
+  }, [activeId, setConversations]);
 
   const selectConversation = async (id: string) => {
     setActiveId(id);
     const existing = conversations.find((conversation) => conversation.id === id);
-    if (existing?.messages.length) return;
+    if (existing?.loaded) return;
     try {
       const full = await api.getChatConversation(id);
       setConversations((current) =>
         current.map((conversation) =>
-          conversation.id === id ? { ...conversation, messages: full.messages || [] } : conversation
+          conversation.id === id && !conversation.loaded && !conversation.pendingSync
+            ? { ...conversation, messages: full.messages || [], loaded: true } : conversation
         )
       );
     } catch {
@@ -348,6 +346,7 @@ export default function ChatPage() {
               key={item}
               type="button"
               onClick={() => setMode(item)}
+              aria-pressed={mode === item}
               className={clsx(
                 "rounded px-3 py-2 text-xs font-medium transition",
                 mode === item ? "bg-ink text-white" : "text-muted hover:text-ink"
@@ -397,15 +396,15 @@ export default function ChatPage() {
         </div>
       </aside>
 
-      <section className="flex min-h-0 flex-1 flex-col">
+      <section className="flex min-h-0 min-w-0 flex-1 flex-col">
         <header className="border-b border-line-soft bg-panel px-5 py-4">
-          <div className="flex flex-col gap-4 xl:flex-row xl:items-center xl:justify-between">
-            <div className="flex items-center gap-3">
-              <div className="grid h-10 w-10 place-items-center rounded-md border border-brand/20 bg-brand/10 text-brand-ink">
+          <div className="flex flex-col gap-4 2xl:flex-row 2xl:items-center 2xl:justify-between">
+            <div className="flex min-w-0 flex-1 items-center gap-3">
+              <div className="grid h-10 w-10 shrink-0 place-items-center rounded-md border border-brand/20 bg-brand/10 text-brand-ink">
                 <Sparkles size={19} />
               </div>
               <div>
-                <h1 className="text-lg font-semibold text-ink">AI Workspace</h1>
+                <h1 className="text-lg font-semibold text-ink">{mode === "workspace" ? "AI Workspace" : "General Chat"}</h1>
                 <p className="text-sm text-muted">
                   {mode === "workspace"
                     ? "Ask normally, or use tool commands for documents, memory, models, analytics, and career jobs."
@@ -414,7 +413,7 @@ export default function ChatPage() {
               </div>
             </div>
 
-            <div className="hidden gap-2 sm:grid sm:grid-cols-3 xl:w-[36rem]">
+            <div className="hidden min-w-0 gap-2 sm:grid sm:grid-cols-3 2xl:w-[36rem] 2xl:shrink-0">
               {toolCards.slice(0, 3).map(({ href, label, icon: Icon, detail }) => (
                 <Link
                   key={href}
@@ -438,7 +437,9 @@ export default function ChatPage() {
         <div className="min-h-0 flex-1">
           {activeConversation && (
             <ChatWindow
+              key={`${activeConversation.id}:${mode}`}
               onSend={mode === "workspace" ? handleWorkspaceSend : handleGeneralSend}
+              disabled={!ready || !activeConversation.loaded}
               onStream={mode === "general" ? handleGeneralStream : undefined}
               streamMeta={{ route: mode === "general" ? "general" : "workspace" }}
               initialMessages={activeConversation.messages}

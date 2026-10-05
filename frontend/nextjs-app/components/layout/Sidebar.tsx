@@ -9,7 +9,7 @@ import { api } from "@/lib/api";
 import { useEffect, useState } from "react";
 
 const nav = [
-  { href: "/chat", label: "Chat", icon: MessageSquareText, desc: "General" },
+  { href: "/chat", label: "Chat", icon: MessageSquareText, desc: "Workspace & General" },
   { href: "/brain", label: "Brain", icon: Brain, desc: "Knowledge" },
   { href: "/documents", label: "Docs", icon: Files, desc: "Library" },
   { href: "/career", label: "Career", icon: BriefcaseBusiness, desc: "CV match" },

@@ -2,9 +2,10 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Database, Loader2, RefreshCw, Trash2, Upload } from "lucide-react";
-import ChatWindow from "@/components/chat/ChatWindow";
+import ChatWindow, { type Message } from "@/components/chat/ChatWindow";
 import ChartRenderer from "@/components/charts/ChartRenderer";
 import { api } from "@/lib/api";
+import { createChatSession, useChatState } from "@/lib/chat-state";
 
 type DatasetSummary = {
   name: string;
@@ -75,31 +76,53 @@ function formatCell(value: unknown, column: string) {
 }
 
 export default function DashboardPage() {
-  const [sessionId, setSessionId] = useState(() => crypto.randomUUID());
+  const { state, updateState, ready } = useChatState();
+  const activeDataset = state.bi.activeDataset;
+  const session = state.bi.sessions[activeDataset];
+  const sessionId = session?.id || "bi-empty";
   const [datasets, setDatasets] = useState<DatasetSummary[]>([]);
-  const [activeDataset, setActiveDataset] = useState("");
   const [loadingDatasets, setLoadingDatasets] = useState(true);
   const [datasetLoadError, setDatasetLoadError] = useState("");
   const [deleteError, setDeleteError] = useState<DeleteError | null>(null);
   const [deletingDataset, setDeletingDataset] = useState("");
   const [uploading, setUploading] = useState(false);
   const [uploadNotice, setUploadNotice] = useState<Notice | null>(null);
-  const [lastChart, setLastChart] = useState<any>(null);
+  const [lastChart, setLastChart] = useState<any>(() => session?.messages.slice().reverse().find((message) => message.chart)?.chart || null);
   const fileRef = useRef<HTMLInputElement>(null);
-  const activeDatasetRef = useRef("");
+  const activeDatasetRef = useRef(activeDataset);
   const datasetsRef = useRef<DatasetSummary[]>([]);
   const datasetLoadRequestRef = useRef(0);
+  const sessionsRef = useRef(state.bi.sessions);
   const datasetButtonRefs = useRef<Record<string, HTMLButtonElement | null>>({});
   const datasetListHeadingRef = useRef<HTMLDivElement>(null);
 
+  sessionsRef.current = state.bi.sessions;
+
   const selectDataset = useCallback((name: string, forceReset = false) => {
     const changed = activeDatasetRef.current !== name;
-    if (!changed && !forceReset) return;
+    if (!changed && !forceReset && (!name || sessionsRef.current[name])) return;
     activeDatasetRef.current = name;
-    if (changed) setActiveDataset(name);
-    setLastChart(null);
-    setSessionId(crypto.randomUUID());
-  }, []);
+    setLastChart(forceReset ? null : sessionsRef.current[name]?.messages.slice().reverse().find((message) => message.chart)?.chart || null);
+    updateState((current) => ({
+      ...current,
+      bi: {
+        activeDataset: name,
+        sessions: name && (forceReset || !current.bi.sessions[name])
+          ? { ...current.bi.sessions, [name]: createChatSession() } : current.bi.sessions,
+      },
+    }));
+  }, [updateState]);
+
+  const updateMessages = useCallback((messages: Message[]) => {
+    updateState((current) => {
+      const currentSession = current.bi.sessions[activeDataset];
+      if (!currentSession || currentSession.id !== sessionId) return current;
+      return {
+        ...current,
+        bi: { ...current.bi, sessions: { ...current.bi.sessions, [activeDataset]: { ...currentSession, messages } } },
+      };
+    });
+  }, [activeDataset, sessionId, updateState]);
 
   const loadDatasets = useCallback(async () => {
     const requestId = ++datasetLoadRequestRef.current;
@@ -132,11 +155,12 @@ export default function DashboardPage() {
   }, [selectDataset]);
 
   useEffect(() => {
+    if (!ready) return;
     void loadDatasets();
     return () => {
       datasetLoadRequestRef.current += 1;
     };
-  }, [loadDatasets]);
+  }, [loadDatasets, ready]);
 
   const handleSend = async (message: string, signal?: AbortSignal) => {
     if (!activeDataset) {
@@ -206,6 +230,11 @@ export default function DashboardPage() {
     try {
       await api.biDeleteDataset(dataset.name);
       const remaining = datasetsRef.current.filter((item) => item.name !== dataset.name);
+      updateState((current) => {
+        const sessions = { ...current.bi.sessions };
+        delete sessions[dataset.name];
+        return { ...current, bi: { ...current.bi, sessions } };
+      });
       datasetsRef.current = remaining;
       setDatasets(remaining);
       const deletedActiveDataset = activeDatasetRef.current === dataset.name;
@@ -413,7 +442,7 @@ export default function DashboardPage() {
         )}
       </section>
 
-      <section className="flex min-h-0 flex-1 flex-col">
+      <section className="flex min-h-0 min-w-0 flex-1 flex-col">
         <header className="border-b border-line-soft bg-panel px-5 py-4">
           <h2 className="text-lg font-semibold text-ink">BI Dashboard</h2>
           <p className="text-sm text-muted">
@@ -424,8 +453,10 @@ export default function DashboardPage() {
           <ChatWindow
             key={`${activeDataset}:${sessionId}`}
             onSend={handleSend}
+            initialMessages={session?.messages}
+            onMessagesChange={updateMessages}
             resetKey={`${activeDataset}:${sessionId}`}
-            disabled={!activeDataset}
+            disabled={!ready || !activeDataset || loadingDatasets}
             placeholder={activeDataset ? "Show revenue by month as a bar chart..." : "Select or upload a dataset to start..."}
             emptyTitle="Ask a question about your data"
             renderExtra={renderResult}

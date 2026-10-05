@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Activity, RefreshCw } from "lucide-react";
 import { api } from "@/lib/api";
 
@@ -8,30 +8,31 @@ export default function AnalyticsPage() {
   const [summary, setSummary] = useState<any>(null);
   const [recent, setRecent] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+  const loadRequestRef = useRef(0);
 
   const refresh = async () => {
+    const requestId = ++loadRequestRef.current;
     setLoading(true);
-    try {
-      const [s, r] = await Promise.all([api.analyticsSummary(72), api.analyticsRecent(30)]);
-      setSummary(s);
-      setRecent(Array.isArray(r) ? r : []);
-    } catch {
-      setSummary(null);
-      setRecent([]);
-    } finally {
-      setLoading(false);
-    }
+    const [s, r] = await Promise.allSettled([api.analyticsSummary(72), api.analyticsRecent(30)]);
+    if (requestId !== loadRequestRef.current) return;
+    setSummary(s.status === "fulfilled" ? s.value : null);
+    setRecent(r.status === "fulfilled" && Array.isArray(r.value) ? r.value : []);
+    const failed = [s, r].some((result) => result.status === "rejected");
+    setError(failed ? "Could not load all analytics. Refresh to retry." : "");
+    setLoading(false);
   };
 
   useEffect(() => {
-    refresh();
+    void refresh();
+    return () => { loadRequestRef.current += 1; };
   }, []);
 
   const cards = [
-    ["Queries", summary?.total_queries ?? 0],
-    ["Success", summary?.success_rate ? `${(summary.success_rate * 100).toFixed(0)}%` : "-"],
-    ["Average", summary?.avg_latency_ms ? `${summary.avg_latency_ms}ms` : "-"],
-    ["P95", summary?.p95_latency_ms ? `${summary.p95_latency_ms}ms` : "-"],
+    ["Queries", summary?.total_queries ?? "-"],
+    ["Success", summary?.success_rate != null ? `${(summary.success_rate * 100).toFixed(0)}%` : "-"],
+    ["Average", summary?.avg_latency_ms != null ? `${summary.avg_latency_ms}ms` : "-"],
+    ["P95", summary?.p95_latency_ms != null ? `${summary.p95_latency_ms}ms` : "-"],
   ];
 
   return (
@@ -54,6 +55,8 @@ export default function AnalyticsPage() {
           Refresh
         </button>
       </div>
+
+      {error && <div role="alert" className="mb-4 rounded-md border border-danger/30 bg-danger/10 px-3 py-2 text-sm text-danger-ink">{error}</div>}
 
       <div className="mb-5 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
         {cards.map(([label, value]) => (
@@ -80,7 +83,7 @@ export default function AnalyticsPage() {
             <tbody>
               {recent.length === 0 ? (
                 <tr>
-                  <td className="px-4 py-8 text-center text-muted" colSpan={5}>No recent queries.</td>
+                  <td className="px-4 py-8 text-center text-muted" colSpan={5}>{loading ? "Loading queries..." : error ? "Recent queries could not be fully loaded." : "No recent queries."}</td>
                 </tr>
               ) : (
                 recent.map((event, index) => (

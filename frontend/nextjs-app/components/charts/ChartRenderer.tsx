@@ -19,13 +19,13 @@ import {
 } from "recharts";
 
 const COLORS = ["var(--chart-1)", "var(--chart-2)", "var(--chart-3)", "var(--chart-4)", "var(--chart-5)"];
-const GRID_COLOR = "rgb(var(--color-line-soft))";
-const MUTED_COLOR = "rgb(var(--color-muted))";
+const GRID_COLOR = "rgb(var(--palette-line-soft))";
+const MUTED_COLOR = "rgb(var(--palette-muted))";
 const tooltipStyle = {
-  backgroundColor: "rgb(var(--color-panel))",
-  border: "1px solid rgb(var(--color-line))",
+  backgroundColor: "rgb(var(--palette-panel))",
+  border: "1px solid rgb(var(--palette-line))",
   borderRadius: 8,
-  color: "rgb(var(--color-ink))",
+  color: "rgb(var(--palette-ink))",
 };
 
 interface ChartSpec {

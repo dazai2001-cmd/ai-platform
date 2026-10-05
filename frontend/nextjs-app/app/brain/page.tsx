@@ -1,12 +1,18 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useCallback, useRef, useState } from "react";
 import { Brain, FileText, Link as LinkIcon, Upload } from "lucide-react";
 import ChatWindow from "@/components/chat/ChatWindow";
 import { api } from "@/lib/api";
+import { useChatState } from "@/lib/chat-state";
+import type { Message } from "@/components/chat/ChatWindow";
 
 export default function BrainPage() {
-  const [sessionId] = useState(() => crypto.randomUUID());
+  const { state, updateState, ready } = useChatState();
+  const sessionId = state.brain.id;
+  const updateMessages = useCallback((messages: Message[]) => {
+    updateState((current) => ({ ...current, brain: { ...current.brain, messages } }));
+  }, [updateState]);
   const [uploading, setUploading] = useState(false);
   const [uploadMsg, setUploadMsg] = useState("");
   const [uploadError, setUploadError] = useState(false);
@@ -15,8 +21,8 @@ export default function BrainPage() {
   const [textInput, setTextInput] = useState("");
   const fileRef = useRef<HTMLInputElement>(null);
 
-  const handleSend = async (message: string) => api.ragAsk(message, sessionId);
-  const handleStream = async (message: string) => api.ragAskStream(message, sessionId);
+  const handleSend = async (message: string, signal?: AbortSignal) => api.ragAsk(message, sessionId, signal);
+  const handleStream = async (message: string, signal?: AbortSignal) => api.ragAskStream(message, sessionId, signal);
 
   const handlePdfUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -199,15 +205,19 @@ export default function BrainPage() {
         )}
       </section>
 
-      <section className="flex min-h-0 flex-1 flex-col">
+      <section className="flex min-h-0 min-w-0 flex-1 flex-col">
         <header className="border-b border-line-soft bg-panel px-5 py-4">
           <h2 className="text-lg font-semibold text-ink">2nd Brain</h2>
           <p className="text-sm text-muted">Ask questions across your documents, notes, and URLs.</p>
         </header>
         <div className="min-h-0 flex-1">
           <ChatWindow
+            key={sessionId}
             onSend={handleSend}
             onStream={handleStream}
+            initialMessages={state.brain.messages}
+            onMessagesChange={updateMessages}
+            disabled={!ready}
             streamMeta={{ route: "rag" }}
             placeholder="What should I know about..."
             emptyTitle="Ask your knowledge base"

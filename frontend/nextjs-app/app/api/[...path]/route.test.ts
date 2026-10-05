@@ -68,4 +68,21 @@ describe("server API proxy", () => {
     const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
     expect((init.headers as Headers).has("x-api-token")).toBe(false);
   });
+
+  it("uses the native local API when no internal URL is configured", async () => {
+    vi.stubEnv("API_INTERNAL_URL", "");
+    const fetchMock = vi.fn().mockResolvedValue(new Response("{}"));
+    vi.stubGlobal("fetch", fetchMock);
+    const { GET } = await import("./route");
+    await GET(new Request("http://frontend.test/api/health"), { params: Promise.resolve({ path: ["health"] }) });
+    expect(fetchMock.mock.calls[0][0]).toBe("http://127.0.0.1:5000/api/health");
+  });
+
+  it("returns a useful JSON error when the API is unreachable", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new TypeError("fetch failed")));
+    const { GET } = await import("./route");
+    const response = await GET(new Request("http://frontend.test/api/health"), { params: Promise.resolve({ path: ["health"] }) });
+    expect(response.status).toBe(502);
+    expect(await response.json()).toEqual({ error: "The backend API is unavailable. Check that it is running and try again." });
+  });
 });

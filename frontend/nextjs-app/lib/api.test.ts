@@ -83,6 +83,13 @@ describe("API client", () => {
     await expect(api.health()).rejects.toThrow("Request failed (503)");
   });
 
+  it("returns a degraded health payload without treating it as a transport failure", async () => {
+    const health = { status: "degraded", runtime: "local", checks: { model_provider: false } };
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify(health), { status: 503 })));
+    const { api } = await import("./api");
+    await expect(api.health()).resolves.toEqual(health);
+  });
+
   it("does not set a JSON content type for file uploads", async () => {
     const fetchMock = vi.fn().mockResolvedValue(
       new Response(JSON.stringify({ source: "report.pdf" }), {
@@ -288,6 +295,44 @@ describe("API client", () => {
 
     timeout.expire();
     await assertion;
+    expect(requestSignal?.aborted).toBe(true);
+  });
+
+  it("allows a slow server to connect after 75 seconds without restarting the request", async () => {
+    vi.useFakeTimers();
+    let requestSignal: AbortSignal | undefined;
+    const fetchMock = vi.fn((_url: string, options?: RequestInit) => {
+      requestSignal = options?.signal as AbortSignal;
+      return new Promise<Response>((resolve) => {
+        setTimeout(() => resolve(new Response("Knowledge base answer")), 75_000);
+      });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const { api } = await import("./api");
+    const responsePromise = api.ragAskStream("question");
+
+    await vi.advanceTimersByTimeAsync(75_000);
+    const response = await responsePromise;
+
+    expect(requestSignal?.aborted).toBe(false);
+    await expect(response.text()).resolves.toBe("Knowledge base answer");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("forwards cancellation to a regular Brain request", async () => {
+    let requestSignal: AbortSignal | undefined;
+    vi.stubGlobal("fetch", vi.fn((_url: string, options?: RequestInit) => {
+      requestSignal = options?.signal as AbortSignal;
+      return new Promise<Response>(() => undefined);
+    }));
+    const { api } = await import("./api");
+    const controller = new AbortController();
+    const assertion = expect(api.ragAsk("question", "brain-session", controller.signal))
+      .rejects.toMatchObject({ name: "AbortError" });
+
+    controller.abort();
+    await assertion;
+
     expect(requestSignal?.aborted).toBe(true);
   });
 
