@@ -1,3 +1,4 @@
+import json
 from types import SimpleNamespace
 
 import numpy as np
@@ -146,3 +147,30 @@ def test_hashing_embeddings_are_deterministic_normalized_and_relevant(monkeypatc
     assert np.allclose(np.linalg.norm(documents, axis=1), [1.0, 1.0])
     assert np.allclose(query, repeated)
     assert np.linalg.norm(documents[0] - query) < np.linalg.norm(documents[1] - query)
+
+
+def test_local_embedding_model_cannot_execute_untrusted_custom_module(tmp_path, monkeypatch):
+    model_path = tmp_path / "custom-model"
+    model_path.mkdir()
+    marker = tmp_path / "custom-module-executed"
+    (model_path / "modules.json").write_text(json.dumps([{
+        "idx": 0,
+        "name": "0",
+        "path": "",
+        "type": "custom_embedding.CustomEmbedding",
+    }]), encoding="utf-8")
+    (model_path / "custom_embedding.py").write_text(
+        "from pathlib import Path\n"
+        f"Path({str(marker)!r}).write_text('executed', encoding='utf-8')\n"
+        "class CustomEmbedding:\n"
+        "    @staticmethod\n"
+        "    def load(path, **kwargs):\n"
+        "        return CustomEmbedding()\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(settings, "EMBEDDING_PROVIDER", "local")
+
+    with pytest.raises(ValueError, match="trust_remote_code"):
+        Embedder(str(model_path))
+
+    assert not marker.exists()
