@@ -76,7 +76,7 @@ Search and filter roles, import a PDF or Word CV, score job fit, generate applic
 
 ![Analytics dashboard for agent usage, model usage, and latency](docs/screenshots/analytics-dashboard.png)
 
-Monitor query volume, success rate, average and p95 latency, recent requests, and agent/model usage from the same workspace.
+Monitor query volume, success rate, average and p95 latency, recent requests, and agent/model usage from the same workspace. Query metrics, including streamed Brain requests, are stored in the configured application database and survive backend restarts and deployments.
 
 ---
 
@@ -89,7 +89,7 @@ Monitor query volume, success rate, average and p95 latency, recent requests, an
 - Configurable model mapping for different tasks
 - Local model execution through Ollama
 - Cloud model execution through Gemini/OpenRouter
-- Streaming responses for chat-style interaction
+- Incremental streaming through Ollama, Gemini, and OpenRouter for chat-style interaction
 
 ### Document RAG / Second Brain
 
@@ -98,6 +98,7 @@ Monitor query volume, success rate, average and p95 latency, recent requests, an
 - Chunk documents and generate embeddings
 - Store vectors in FAISS with JSON metadata
 - Retrieve relevant chunks for grounded answers
+- Save completed streamed turns in server memory and use recent conversation context for follow-up questions
 - Document library with previews, chunk counts, and delete functionality
 - Optional OCR support can be added with OCRmyPDF/Tesseract for scanned PDFs
 
@@ -549,8 +550,9 @@ FRONTEND_IMAGE=ghcr.io/<owner>/<repository>-frontend:sha-<commit>
 Then run `docker compose --env-file .env.production -f docker-compose.prod.yml
 pull` before `up -d`. Stopping with `docker compose ... down` preserves both
 named volumes. PostgreSQL backups are managed in Supabase. Back up the
-`app_data` volume before upgrades; it contains FAISS indexes, uploaded data, and
-analytics. Do not scale the API beyond one replica until those remaining stores
+`app_data` volume before upgrades; it contains FAISS indexes and uploaded data.
+Query analytics are stored in the application database. Do not scale the API
+beyond one replica until those remaining stores
 and background jobs move to managed shared services.
 
 ### Supabase PostgreSQL persistence
@@ -578,8 +580,8 @@ DATABASE_POOL_MAX_SIZE=5
 With `DATABASE_AUTO_MIGRATE=true`, startup obtains a PostgreSQL advisory lock and
 applies the versioned, idempotent schema migrations. With it disabled, startup
 only verifies the previously migrated schema. Application tables, including
-durable BI dataset payloads and metadata, are created in `app_private`, which is
-not exposed through
+durable BI dataset payloads, metadata, and query analytics, are created in
+`app_private`, which is not exposed through
 Supabase's public Data API. BI uploads are bounded by the configured per-file,
 per-user, application-wide, and dataset-count quotas. The app continues to use its own verified-email
 sessions; enabling this database does not switch it to Supabase Auth. Existing
@@ -747,14 +749,14 @@ For least-privilege production database access, apply the checked-in Supabase
 migrations with an owner/migration credential before starting the API, then set
 `DATABASE_AUTO_MIGRATE=false` and give Render a separate runtime credential with
 only the schema usage and table DML it needs. With automatic migrations disabled,
-startup performs read-only migration-name and BI-table shape checks and fails
-clearly if the schema is missing or partial. Existing deployments can leave
+startup performs read-only migration-name, BI-table, and analytics-table shape
+checks and fails clearly if the schema is missing or partial. Existing deployments can leave
 automatic migration enabled during a controlled rollout, but that requires the
 runtime credential to retain DDL privileges.
 
-`app_private.bi_datasets` is backend-only and uses private-schema/table grants
-instead of Supabase Data API RLS. Grant the Render runtime role only `USAGE` on
-`app_private` plus the required table DML; never grant this table to `anon` or
+`app_private.bi_datasets` and `app_private.analytics_events` are backend-only and
+use private-schema/table grants instead of Supabase Data API RLS. Grant the Render runtime role only `USAGE` on
+`app_private` plus the required table DML; never grant these tables to `anon` or
 `authenticated`, and do not add `app_private` to the exposed Data API schemas.
 
 Frontend environment variables for Netlify:
@@ -994,7 +996,7 @@ Recommended before production use:
 
 - add role-based permissions beyond the current user boundary
 - store deployment secrets in a managed secret manager
-- move FAISS indexes, uploaded data, analytics files, and background jobs to managed shared services before horizontal scaling
+- move FAISS indexes, uploaded data, and background jobs to managed shared services before horizontal scaling
 - add production-grade tracing, monitoring, and alerting
 - use a dedicated least-privilege PostgreSQL role and decide on defense-in-depth RLS policies
 - regularly test Supabase and `app_data` backup/restore procedures
@@ -1014,7 +1016,7 @@ Recommended before production use:
 - Cloudflare Tunnel demo access depends on the local machine being online if used.
 - No Kubernetes or large-scale model-serving infrastructure is included.
 - OCR for scanned PDFs may require additional system dependencies such as Tesseract/OCRmyPDF.
-- FAISS indexes, uploaded files, analytics files, and in-process background jobs remain local to one API host, so the API should stay at one replica until they move to shared services.
+- FAISS indexes, uploaded files, and in-process background jobs remain local to one API host, so the API should stay at one replica until they move to shared services.
 - The live Supabase schema starts clean; existing local SQLite accounts and application records are not migrated automatically.
 
 ---

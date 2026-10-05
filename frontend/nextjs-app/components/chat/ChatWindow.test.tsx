@@ -113,6 +113,39 @@ describe("ChatWindow", () => {
     expect(screen.queryByText("No response stream returned.")).not.toBeInTheDocument();
   });
 
+  it("reports a provider failure after partial output without submitting the prompt again", async () => {
+    const user = userEvent.setup();
+    const encoder = new TextEncoder();
+    const onStream = vi.fn().mockResolvedValue(new Response(new ReadableStream({
+      start(controller) {
+        controller.enqueue(encoder.encode("Partial answer"));
+        controller.enqueue(encoder.encode("[STREAM ER"));
+        controller.enqueue(encoder.encode("ROR]: Provider disconnected"));
+        controller.close();
+      },
+    })));
+    const onSend = vi.fn();
+    render(<ChatWindow onSend={onSend} onStream={onStream} />);
+
+    await user.type(screen.getByRole("textbox"), "Hello{Enter}");
+    expect(await screen.findByText("Error: Provider disconnected")).toBeInTheDocument();
+    expect(onSend).not.toHaveBeenCalled();
+    expect(screen.queryByText(/\[STREAM ERROR\]/)).not.toBeInTheDocument();
+    expect(screen.queryByText("Thinking...")).not.toBeInTheDocument();
+  });
+
+  it("falls back once when a provider error arrives before any output", async () => {
+    const user = userEvent.setup();
+    const onStream = vi.fn().mockResolvedValue(new Response("[STREAM ERROR]: Provider unavailable"));
+    const onSend = vi.fn().mockResolvedValue({ answer: "Recovered answer" });
+    render(<ChatWindow onSend={onSend} onStream={onStream} />);
+
+    await user.type(screen.getByRole("textbox"), "Hello{Enter}");
+    expect(await screen.findByText("Recovered answer")).toBeInTheDocument();
+    expect(onSend).toHaveBeenCalledOnce();
+    expect(screen.queryByText(/Provider unavailable/)).not.toBeInTheDocument();
+  });
+
   it("aborts an active stream without falling back when the user stops it", async () => {
     const user = userEvent.setup();
     const onStream = vi.fn((_message: string, _signal?: AbortSignal) => new Promise<Response>(() => {}));

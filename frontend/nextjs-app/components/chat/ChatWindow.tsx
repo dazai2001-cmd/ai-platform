@@ -189,6 +189,7 @@ export default function ChatWindow({
     const controller = new AbortController();
     activeControllerRef.current = controller;
     abortReasonRef.current = null;
+    let streamHasContent = false;
 
     const appendFinalAnswer = (res: ChatResult) => {
       setMessages((current) => {
@@ -281,16 +282,21 @@ export default function ChatWindow({
           const { done, value } = await abortable(reader.read(), controller.signal);
           if (done) break;
           content += decoder.decode(value, { stream: true });
-          if (content.trimStart().startsWith("[STREAM ERROR]:")) {
-            throw new Error(content.replace("[STREAM ERROR]:", "").trim() || "Streaming request failed.");
+          const errorOffset = content.indexOf("[STREAM ERROR]:");
+          if (errorOffset >= 0) {
+            streamHasContent = streamHasContent || Boolean(content.slice(0, errorOffset).trim());
+            throw new Error(content.slice(errorOffset + "[STREAM ERROR]:".length).trim() || "Streaming request failed.");
           }
+          streamHasContent = streamHasContent || Boolean(content.trim());
           if (content.trim()) armStreamTimer(controller, "timeout");
           updateAssistantDraft(content);
         }
 
         content += decoder.decode();
-        if (content.trimStart().startsWith("[STREAM ERROR]:")) {
-          throw new Error(content.replace("[STREAM ERROR]:", "").trim() || "Streaming request failed.");
+        const errorOffset = content.indexOf("[STREAM ERROR]:");
+        if (errorOffset >= 0) {
+          streamHasContent = streamHasContent || Boolean(content.slice(0, errorOffset).trim());
+          throw new Error(content.slice(errorOffset + "[STREAM ERROR]:".length).trim() || "Streaming request failed.");
         }
         clearStreamTimer();
         activeReaderRef.current = null;
@@ -324,8 +330,8 @@ export default function ChatWindow({
         return;
       }
 
-      if (onStream) {
-        removeStreamDraft();
+      if (onStream) removeStreamDraft();
+      if (onStream && !streamHasContent) {
         try {
           const res = await abortable(onSend(text, controller.signal), controller.signal);
           appendFinalAnswer(res);

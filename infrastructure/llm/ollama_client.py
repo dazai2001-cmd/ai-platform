@@ -113,10 +113,27 @@ class OllamaClient:
     def stream(self, model: str, prompt: str, temperature: float = 0.2) -> Iterator[str]:
         provider, provider_model = self._provider_for(model)
         if provider != "ollama":
+            tokens = (
+                self._stream_gemini(provider_model, prompt, temperature)
+                if provider == "gemini" else self._stream_openrouter(provider_model, prompt, temperature)
+            )
+            emitted = False
             try:
-                yield self.generate(model, prompt, temperature=temperature)
+                try:
+                    for token in tokens:
+                        emitted = emitted or bool(token.strip())
+                        yield token
+                except RuntimeError as error:
+                    # Switching providers after output begins would join two
+                    # different answers and could save an incomplete turn.
+                    if provider == "gemini" and not emitted and self._can_fallback_to_openrouter(error):
+                        yield from self._stream_openrouter(settings.OPENROUTER_MODELS[0], prompt, temperature)
+                    else:
+                        raise
             except Exception as e:
                 yield f"[STREAM ERROR]: {str(e)}"
+            finally:
+                tokens.close()
             return
 
         payload = {
@@ -164,6 +181,137 @@ class OllamaClient:
         except Exception:
             return []
 
+    @staticmethod
+    def _gemini_thinking_config(model: str) -> dict:
+        if model.startswith("gemini-3") and "image" not in model:
+            return {"thinkingConfig": {"thinkingLevel": "LOW"}}
+        if model.startswith("gemini-2.5-flash") and "image" not in model:
+            return {"thinkingConfig": {"thinkingBudget": 0}}
+        return {}
+
+    @staticmethod
+    def _sse_events(response, provider: str) -> Iterator[dict]:
+        data_lines = []
+
+        def decode():
+            payload = "\n".join(data_lines)
+            if payload == "[DONE]":
+                return None
+            try:
+                event = json.loads(payload)
+            except (TypeError, ValueError) as error:
+                raise RuntimeError(f"{provider} returned invalid streaming data.") from error
+            if not isinstance(event, dict):
+                raise RuntimeError(f"{provider} returned invalid streaming data.")
+            if event.get("error"):
+                # Provider errors can echo prompts or credentials. Never put
+                # their raw SSE payload into the browser or application logs.
+                raise RuntimeError(f"{provider} request failed.")
+            return event
+
+        for line in response.iter_lines(chunk_size=1, decode_unicode=True):
+            if isinstance(line, bytes):
+                line = line.decode("utf-8")
+            if not line:
+                if data_lines:
+                    event = decode()
+                    data_lines = []
+                    if event is None:
+                        return
+                    yield event
+            elif line.startswith("data:"):
+                data_lines.append(line[5:].lstrip(" "))
+            # SSE comments, event names, ids and retry hints contain no answer.
+        if data_lines:
+            event = decode()
+            if event is not None:
+                yield event
+
+    def _stream_gemini(self, model: str, prompt: str, temperature: float) -> Iterator[str]:
+        payload = {
+            "contents": [{"role": "user", "parts": [{"text": prompt}]}],
+            "generationConfig": {
+                "temperature": temperature,
+                "maxOutputTokens": settings.LLM_MAX_TOKENS,
+                **self._gemini_thinking_config(model),
+            },
+        }
+        complete = False
+        answered = False
+        try:
+            with requests.post(
+                f"{settings.GEMINI_BASE_URL}/models/{model}:streamGenerateContent",
+                params={"alt": "sse"},
+                headers={"x-goog-api-key": settings.GEMINI_API_KEY},
+                json=payload, stream=True, timeout=settings.CLOUD_LLM_TIMEOUT_SECONDS,
+            ) as response:
+                response.raise_for_status()
+                for event in self._sse_events(response, "Gemini"):
+                    candidates = event.get("candidates")
+                    candidate = candidates[0] if isinstance(candidates, list) and candidates and isinstance(candidates[0], dict) else {}
+                    content = candidate.get("content")
+                    parts = content.get("parts", []) if isinstance(content, dict) else []
+                    for part in parts if isinstance(parts, list) else []:
+                        if not isinstance(part, dict):
+                            continue
+                        text = part.get("text")
+                        if isinstance(text, str) and text and not part.get("thought"):
+                            answered = answered or bool(text.strip())
+                            yield text
+                    finish = candidate.get("finishReason")
+                    if finish == "STOP":
+                        complete = True
+                    elif finish:
+                        raise RuntimeError("Gemini returned an incomplete response.")
+        except requests.exceptions.RequestException as error:
+            raise RuntimeError(self._safe_provider_error("Gemini", error)) from error
+        if not answered:
+            raise RuntimeError("Gemini returned no user-facing answer.")
+        if not complete:
+            raise RuntimeError("Gemini returned an incomplete response.")
+
+    def _stream_openrouter(self, model: str, prompt: str, temperature: float) -> Iterator[str]:
+        payload = {
+            "model": model,
+            "messages": [{"role": "user", "content": prompt}],
+            "temperature": temperature,
+            "max_tokens": settings.LLM_MAX_TOKENS,
+            "stream": True,
+        }
+        complete = False
+        answered = False
+        try:
+            with requests.post(
+                f"{settings.OPENROUTER_BASE_URL}/chat/completions",
+                headers={
+                    "Authorization": f"Bearer {settings.OPENROUTER_API_KEY}",
+                    "Content-Type": "application/json",
+                    "HTTP-Referer": settings.APP_PUBLIC_URL,
+                    "X-Title": "AI Platform",
+                },
+                json=payload, stream=True, timeout=settings.CLOUD_LLM_TIMEOUT_SECONDS,
+            ) as response:
+                response.raise_for_status()
+                for event in self._sse_events(response, "OpenRouter"):
+                    choices = event.get("choices")
+                    choice = choices[0] if isinstance(choices, list) and choices and isinstance(choices[0], dict) else {}
+                    delta = choice.get("delta")
+                    text = delta.get("content") if isinstance(delta, dict) else None
+                    if isinstance(text, str) and text:
+                        answered = answered or bool(text.strip())
+                        yield text
+                    finish = choice.get("finish_reason")
+                    if finish == "stop":
+                        complete = True
+                    elif finish:
+                        raise RuntimeError("OpenRouter returned an incomplete response.")
+        except requests.exceptions.RequestException as error:
+            raise RuntimeError(self._safe_provider_error("OpenRouter", error)) from error
+        if not answered:
+            raise RuntimeError("OpenRouter returned no user-facing answer.")
+        if not complete:
+            raise RuntimeError("OpenRouter returned an incomplete response.")
+
     def _generate_gemini(
         self,
         model: str,
@@ -189,16 +337,13 @@ class OllamaClient:
                     "generationConfig": {
                         "temperature": temperature,
                         "maxOutputTokens": output_tokens,
+                        **self._gemini_thinking_config(model),
                     },
                 }
                 if json_format:
                     payload["generationConfig"]["responseMimeType"] = "application/json"
                 if json_schema is not None:
                     payload["generationConfig"]["responseJsonSchema"] = json_schema
-                    if model.startswith("gemini-3"):
-                        payload["generationConfig"]["thinkingConfig"] = {"thinkingLevel": "LOW"}
-                    elif model.startswith("gemini-2.5-flash"):
-                        payload["generationConfig"]["thinkingConfig"] = {"thinkingBudget": 0}
 
                 r = requests.post(
                     f"{settings.GEMINI_BASE_URL}/models/{model}:generateContent",
