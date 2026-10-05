@@ -134,6 +134,35 @@ def test_career_endpoint_respects_users_selected_model(client, monkeypatch):
     generate.assert_called_once_with("Python engineer", "Python role", "preferred-career-model")
 
 
+def test_saved_career_jobs_and_match_packs_use_owners_model_preferences(client, monkeypatch):
+    from apps.api.routes import career as career_routes
+    from services.settings.model_settings_service import model_settings
+
+    owner = _create_verified_session(client, "career-job-owner@example.com")
+    other = _create_verified_session(client, "career-job-other@example.com")
+    model_settings.update({"career": "owner-career-model"}, user_id=owner["user"]["id"])
+    model_settings.update({"career": "other-career-model"}, user_id=other["user"]["id"])
+    analyze = Mock(return_value={"fit_score": 85, "summary": "Python experience fits the role."})
+    generate = Mock(return_value={"analysis": {"fit_score": 85}, "model": "owner-career-model"})
+    monkeypatch.setattr(career_routes.career_service, "analyze_fit", analyze)
+    monkeypatch.setattr(career_routes.career_service, "application_pack_for_match", generate)
+
+    saved = client.post("/api/career/jobs", headers=_bearer(owner["token"]), json={
+        "title": "Python Engineer", "company": "Example", "description": "Python role", "cv_text": "Python engineer",
+    })
+    assert saved.status_code == 200
+    job = saved.get_json()
+    analyze.assert_called_once_with("Python engineer", "Python role", model="owner-career-model")
+    rescored = client.post(f"/api/career/jobs/{job['id']}/score", headers=_bearer(owner["token"]), json={"cv_text": "Updated Python CV"})
+    assert rescored.status_code == 200
+    analyze.assert_called_with("Updated Python CV", "Python role", model="owner-career-model")
+
+    pack = client.post(f"/api/career/jobs/{job['id']}/pack", headers=_bearer(owner["token"]), json={"cv_text": "Python engineer"})
+    assert pack.status_code == 200
+    generate.assert_called_once_with("Python engineer", "Python role", job["analysis"], "owner-career-model")
+    assert client.post(f"/api/career/jobs/{job['id']}/pack", headers=_bearer(other["token"]), json={"cv_text": "Other CV"}).status_code == 404
+
+
 def test_auth_signup_verify_login_me_and_logout(client):
     signup = client.post(
         "/api/auth/signup",

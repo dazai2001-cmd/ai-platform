@@ -247,7 +247,7 @@ def generate_match_pack(job_id: str):
             cv_text,
             job["description"],
             job.get("analysis") or {},
-            data.get("model"),
+            data.get("model") or model_settings.model_for(TASK_CAREER, user_id=user_id),
         )
         career_jobs.record_application_pack(user_id=user_id)
         return jsonify(result)

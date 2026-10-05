@@ -15,6 +15,7 @@ from bs4 import BeautifulSoup
 from application.ingestion.ingestion_service import IngestionService
 from core.config.settings import settings
 from services.career.career_service import career_service
+from services.settings.model_settings_service import model_settings
 from services.storage.sqlite_service import db
 
 
@@ -439,7 +440,7 @@ class CareerJobService:
                 return self.score_job(existing["id"], cv_text, user_id=user_id)
             return existing
 
-        score_data = self._score(cv_text, description) if cv_text.strip() else {}
+        score_data = self._score(cv_text, description, user_id=user_id) if cv_text.strip() else {}
 
         db.execute(
             """
@@ -475,7 +476,7 @@ class CareerJobService:
             raise ValueError("cv_text is required")
 
         self._ensure_quota(USAGE_ACTION_SCORE, user_id=user_id)
-        score_data = self._score(cv_text, job["description"])
+        score_data = self._score(cv_text, job["description"], user_id=user_id)
         db.execute(
             """
             UPDATE career_jobs
@@ -796,8 +797,9 @@ class CareerJobService:
             "updated_at": row["updated_at"],
         }
 
-    def _score(self, cv_text: str, description: str) -> dict[str, Any]:
-        analysis = career_service.analyze_fit(cv_text, description)
+    def _score(self, cv_text: str, description: str, user_id: str = "local") -> dict[str, Any]:
+        model = model_settings.model_for("career", user_id=user_id)
+        analysis = career_service.analyze_fit(cv_text, description, model=model)
         if "analysis" in analysis and isinstance(analysis["analysis"], dict):
             analysis = analysis["analysis"]
         return analysis
