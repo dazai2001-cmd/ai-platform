@@ -28,6 +28,40 @@ def postgres_db():
         service.close()
 
 
+def test_brain_stream_saves_postgres_history_for_follow_up_queries(postgres_db, tmp_path, monkeypatch):
+    import importlib
+    from unittest.mock import Mock
+
+    from agents import rag_agent as rag_module
+    from services.analytics.analytics_service import AnalyticsService
+    from services.memory.memory_service import MemoryService
+
+    memory_module = importlib.import_module("services.memory.memory_service")
+    monkeypatch.setattr(memory_module, "db", postgres_db)
+    memory = MemoryService()
+    metrics = AnalyticsService(tmp_path / "brain-postgres-analytics.jsonl")
+    monkeypatch.setattr(rag_module, "memory", memory)
+    monkeypatch.setattr(rag_module, "analytics", metrics)
+    agent = rag_module.RAGAgent()
+    agent.pipeline = Mock()
+    agent.pipeline.stream_ask.side_effect = [iter(["123 dollars"]), iter(["123"])]
+    user_id = uuid.uuid4().hex
+    session_id = uuid.uuid4().hex
+
+    first, _, _ = agent.stream_ask("What is the Juniper budget?", session_id=session_id, user_id=user_id)
+    assert "".join(first) == "123 dollars"
+    second, _, _ = agent.stream_ask("What was that number?", session_id=session_id, user_id=user_id)
+    assert "".join(second) == "123"
+
+    assert agent.pipeline.stream_ask.call_args.kwargs["history"] == [
+        {"role": "user", "content": "What is the Juniper budget?"},
+        {"role": "assistant", "content": "123 dollars"},
+    ]
+    assert len(MemoryService().get(session_id, user_id=user_id)) == 4
+    assert MemoryService().get(session_id, user_id="other-owner") == []
+    assert metrics.summary(user_id=user_id)["by_agent"] == {"rag": 2}
+
+
 def test_real_postgres_schema_crud_upserts_and_foreign_keys(postgres_db):
     user_id = str(uuid.uuid4())
     conversation_id = uuid.uuid4().hex

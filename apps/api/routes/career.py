@@ -8,9 +8,11 @@ from apps.api.auth_context import current_user_id
 from apps.api.deps import ALLOWED_CV, UploadTooLargeError, remove_upload, save_upload
 from apps.api.errors import error_response
 from core.config.settings import settings
+from core.config.constants import TASK_CAREER
 from services.career import career_service
 from services.career.cv_document_service import cv_documents
 from services.career.job_search_service import career_jobs
+from services.settings.model_settings_service import model_settings
 
 career_bp = Blueprint("career", __name__, url_prefix="/api/career")
 
@@ -24,6 +26,7 @@ def _payload():
         return None, jsonify({"error": "cv_text is required"}), 400
     if not job_description:
         return None, jsonify({"error": "job_description is required"}), 400
+    model = model or model_settings.model_for(TASK_CAREER, user_id=current_user_id())
     return (cv_text, job_description, model), None, None
 
 

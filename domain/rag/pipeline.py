@@ -21,16 +21,7 @@ class QAPipeline:
         results = retrieval_results if retrieval_results is not None else self.retriever.search(question, user_id=user_id)
         context = self.retriever.format_context(results)
 
-        # Include last 4 messages of history if available
-        history_text = ""
-        if history:
-            for msg in history[-4:]:
-                role = msg.get("role", "user").upper()
-                history_text += f"{role}: {msg.get('content', '')}\n"
-
-        full_question = f"{history_text}USER: {question}" if history_text else question
-
-        prompt = _PROMPT.format(context=context, question=full_question)
+        prompt = self._prompt(question, context, history)
         answer = ollama.generate(model, prompt)
 
         return {
@@ -42,9 +33,22 @@ class QAPipeline:
             "model": model
         }
 
-    def stream_ask(self, question: str, model: str = None, user_id: str = "local"):
+    @staticmethod
+    def _prompt(question: str, context: str, history: list[dict] | None = None) -> str:
+        # Use the same bounded conversation context for both response modes.
+        history_text = ""
+        if history:
+            for msg in history[-4:]:
+                role = msg.get("role", "user").upper()
+                history_text += f"{role}: {msg.get('content', '')}\n"
+
+        full_question = f"{history_text}USER: {question}" if history_text else question
+
+        return _PROMPT.format(context=context, question=full_question)
+
+    def stream_ask(self, question: str, model: str = None, user_id: str = "local", history: list[dict] | None = None):
         model = model or settings.TASK_MODELS["rag"]
         results = self.retriever.search(question, user_id=user_id)
         context = self.retriever.format_context(results)
-        prompt = _PROMPT.format(context=context, question=question)
+        prompt = self._prompt(question, context, history)
         return ollama.stream(model, prompt)

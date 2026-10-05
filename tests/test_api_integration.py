@@ -65,6 +65,75 @@ def _create_verified_session(client, email: str) -> dict:
     return login.get_json()
 
 
+def test_brain_stream_is_saved_in_server_memory_and_usage(client, tmp_path, monkeypatch):
+    from agents import rag_agent as rag_module
+    from apps.api.routes import health as health_routes
+    from services.analytics.analytics_service import AnalyticsService
+
+    owner = _create_verified_session(client, "brain-owner@example.com")
+    other = _create_verified_session(client, "brain-other@example.com")
+    metrics = AnalyticsService(tmp_path / "brain-analytics.jsonl")
+    monkeypatch.setattr(rag_module, "analytics", metrics)
+    monkeypatch.setattr(health_routes, "analytics", metrics)
+    monkeypatch.setattr(rag_module.rag_agent, "ensure_ready", Mock())
+    pipeline = Mock()
+    pipeline.stream_ask.return_value = iter(["The budget is ", "123 dollars."])
+    monkeypatch.setattr(rag_module.rag_agent, "pipeline", pipeline)
+    session_id = "brain-stream-session"
+
+    response = client.post("/api/rag/ask/stream", headers=_bearer(owner["token"]), json={
+        "question": "What is the Juniper budget?", "session_id": session_id,
+    })
+    assert response.status_code == 200
+    assert response.get_data(as_text=True) == "The budget is 123 dollars."
+    messages = client.get(f"/api/memory/{session_id}", headers=_bearer(owner["token"])).get_json()
+    assert [(message["role"], message["content"]) for message in messages] == [
+        ("user", "What is the Juniper budget?"), ("assistant", "The budget is 123 dollars."),
+    ]
+    assert client.get(f"/api/memory/{session_id}", headers=_bearer(other["token"])).get_json() == []
+    assert client.get("/api/analytics/summary", headers=_bearer(owner["token"])).get_json()["by_agent"] == {"rag": 1}
+    assert client.get("/api/analytics/summary", headers=_bearer(other["token"])).get_json()["total_queries"] == 0
+
+
+def test_brain_http_cancellation_closes_generator(client, monkeypatch):
+    from apps.api.routes import rag as rag_routes
+
+    owner = _create_verified_session(client, "brain-cancel@example.com")
+    closed = []
+
+    def upstream():
+        try:
+            yield "partial"
+            yield "remaining"
+        finally:
+            closed.append(True)
+
+    monkeypatch.setattr(rag_routes.rag_agent, "stream_ask", Mock(return_value=(upstream(), "session", "model")))
+    response = client.post("/api/rag/ask/stream", headers=_bearer(owner["token"]), json={"question": "Question"}, buffered=False)
+    assert next(response.response) == b"partial"
+    response.close()
+    assert closed == [True]
+
+
+def test_career_endpoint_respects_users_selected_model(client, monkeypatch):
+    from apps.api.routes import career as career_routes
+
+    owner = _create_verified_session(client, "career-model@example.com")
+    selected = Mock(return_value="preferred-career-model")
+    generate = Mock(return_value={"analysis": {"fit_score": 85}})
+    monkeypatch.setattr(career_routes.model_settings, "model_for", selected)
+    monkeypatch.setattr(career_routes.career_service, "application_pack", generate)
+    monkeypatch.setattr(career_routes.career_jobs, "ensure_application_pack_allowed", Mock())
+    monkeypatch.setattr(career_routes.career_jobs, "record_application_pack", Mock())
+
+    response = client.post("/api/career/pack", headers=_bearer(owner["token"]), json={
+        "cv_text": "Python engineer", "job_description": "Python role",
+    })
+    assert response.status_code == 200
+    selected.assert_called_once_with("career", user_id=owner["user"]["id"])
+    generate.assert_called_once_with("Python engineer", "Python role", "preferred-career-model")
+
+
 def test_auth_signup_verify_login_me_and_logout(client):
     signup = client.post(
         "/api/auth/signup",

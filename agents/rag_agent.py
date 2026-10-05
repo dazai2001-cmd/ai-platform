@@ -86,10 +86,64 @@ class RAGAgent:
             raise
 
     def stream_ask(self, question: str, session_id: str = None, model: str = None, user_id: str = "local"):
-        self.ensure_ready()
         session_id = session_id or str(uuid.uuid4())
         model = model or settings.TASK_MODELS["rag"]
-        return self.pipeline.stream_ask(question, model=model, user_id=user_id), session_id, model
+        t0 = time.monotonic()
+        try:
+            self.ensure_ready()
+            history = memory.to_llm_format(session_id, user_id=user_id)
+            tokens = self.pipeline.stream_ask(question, model=model, user_id=user_id, history=history)
+        except Exception as exc:
+            analytics.record(QueryEvent(
+                user_id=user_id, session_id=session_id, query=question,
+                agent="rag", model=model, latency_ms=(time.monotonic() - t0) * 1000,
+                success=False, error=str(exc), error_type=type(exc).__name__,
+            ))
+            raise
+
+        def generate():
+            parts = []
+            success = False
+            error = None
+            error_type = None
+            try:
+                for token in tokens:
+                    if token.startswith("[STREAM ERROR]:"):
+                        error = token
+                        error_type = "stream_error"
+                    else:
+                        parts.append(token)
+                    yield token
+
+                answer = "".join(parts).strip()
+                if not error and answer:
+                    memory.add(session_id, "user", question, user_id=user_id)
+                    memory.add(session_id, "assistant", answer, user_id=user_id)
+                    success = True
+                elif not error:
+                    error = "The model returned an empty response."
+                    error_type = "empty_response"
+            except GeneratorExit:
+                error = "The response stream was cancelled."
+                error_type = "stream_cancelled"
+                raise
+            except Exception as exc:
+                error = str(exc)
+                error_type = type(exc).__name__
+                raise
+            finally:
+                try:
+                    close = getattr(tokens, "close", None)
+                    if close:
+                        close()
+                finally:
+                    analytics.record(QueryEvent(
+                        user_id=user_id, session_id=session_id, query=question,
+                        agent="rag", model=model, latency_ms=(time.monotonic() - t0) * 1000,
+                        success=success, error=error, error_type=error_type,
+                    ))
+
+        return generate(), session_id, model
 
     def ingest_pdf(self, path: str, filename: str, user_id: str = "local") -> int:
         self.ensure_ready()

@@ -5,6 +5,12 @@ from typing import Optional, Iterator
 from core.config.settings import settings
 
 
+class ProviderOutputError(RuntimeError):
+    def __init__(self, provider: str):
+        self.reason = "truncated_output"
+        super().__init__(f"{provider} returned truncated structured output.")
+
+
 class OllamaClient:
     """
     Unified interface for all local LLM calls via Ollama.
@@ -58,12 +64,14 @@ class OllamaClient:
         prompt: str,
         temperature: float = 0.2,
         max_tokens: Optional[int] = None,
-        json_format: bool = False
+        json_format: bool = False,
+        json_schema: Optional[dict] = None,
     ) -> str:
+        json_format = json_format or json_schema is not None
         provider, provider_model = self._provider_for(model)
         if provider == "gemini":
             try:
-                return self._generate_gemini(provider_model, prompt, temperature, max_tokens, json_format)
+                return self._generate_gemini(provider_model, prompt, temperature, max_tokens, json_format, json_schema)
             except RuntimeError as e:
                 if self._can_fallback_to_openrouter(e):
                     return self._generate_openrouter(
@@ -72,10 +80,11 @@ class OllamaClient:
                         temperature,
                         max_tokens,
                         json_format,
+                        json_schema,
                     )
                 raise
         if provider == "openrouter":
-            return self._generate_openrouter(provider_model, prompt, temperature, max_tokens, json_format)
+            return self._generate_openrouter(provider_model, prompt, temperature, max_tokens, json_format, json_schema)
 
         payload = {
             "model": provider_model,
@@ -85,7 +94,7 @@ class OllamaClient:
             "options": self._local_options(temperature, max_tokens),
         }
         if json_format:
-            payload["format"] = "json"
+            payload["format"] = json_schema if json_schema is not None else "json"
 
         try:
             r = requests.post(
@@ -94,7 +103,10 @@ class OllamaClient:
                 timeout=settings.OLLAMA_TIMEOUT_SECONDS
             )
             r.raise_for_status()
-            return r.json()["response"]
+            data = r.json()
+            if json_format and data.get("done_reason") == "length":
+                raise ProviderOutputError("Ollama")
+            return data["response"]
         except requests.exceptions.RequestException as e:
             raise RuntimeError(self._safe_provider_error("Ollama", e)) from e
 
@@ -159,10 +171,12 @@ class OllamaClient:
         temperature: float,
         max_tokens: Optional[int],
         json_format: bool,
+        json_schema: Optional[dict] = None,
     ) -> str:
         if not settings.GEMINI_API_KEY:
             raise RuntimeError("GEMINI_API_KEY is not configured")
         try:
+            output_tokens = max_tokens or settings.LLM_MAX_TOKENS
             for attempt in range(2):
                 effective_prompt = prompt
                 if attempt:
@@ -174,11 +188,17 @@ class OllamaClient:
                     "contents": [{"role": "user", "parts": [{"text": effective_prompt}]}],
                     "generationConfig": {
                         "temperature": temperature,
-                        "maxOutputTokens": max_tokens or settings.LLM_MAX_TOKENS,
+                        "maxOutputTokens": output_tokens,
                     },
                 }
                 if json_format:
                     payload["generationConfig"]["responseMimeType"] = "application/json"
+                if json_schema is not None:
+                    payload["generationConfig"]["responseJsonSchema"] = json_schema
+                    if model.startswith("gemini-3"):
+                        payload["generationConfig"]["thinkingConfig"] = {"thinkingLevel": "LOW"}
+                    elif model.startswith("gemini-2.5-flash"):
+                        payload["generationConfig"]["thinkingConfig"] = {"thinkingBudget": 0}
 
                 r = requests.post(
                     f"{settings.GEMINI_BASE_URL}/models/{model}:generateContent",
@@ -187,7 +207,15 @@ class OllamaClient:
                     timeout=settings.CLOUD_LLM_TIMEOUT_SECONDS,
                 )
                 r.raise_for_status()
-                answer = self._gemini_answer_text(r.json())
+                data = r.json()
+                candidates = data.get("candidates") if isinstance(data, dict) else None
+                candidate = candidates[0] if isinstance(candidates, list) and candidates and isinstance(candidates[0], dict) else {}
+                if json_format and candidate.get("finishReason") == "MAX_TOKENS":
+                    if attempt == 0:
+                        output_tokens = min(output_tokens * 2, 8192)
+                        continue
+                    raise ProviderOutputError("Gemini")
+                answer = self._gemini_answer_text(data)
                 if answer and not self._internal_label_only(answer):
                     return answer
 
@@ -224,6 +252,7 @@ class OllamaClient:
         temperature: float,
         max_tokens: Optional[int],
         json_format: bool,
+        json_schema: Optional[dict] = None,
     ) -> str:
         if not settings.OPENROUTER_API_KEY:
             raise RuntimeError("OPENROUTER_API_KEY is not configured")
@@ -243,7 +272,10 @@ class OllamaClient:
         for attempt in range(2):
             request_payload = dict(payload)
             if enforce_json:
-                request_payload["response_format"] = {"type": "json_object"}
+                request_payload["response_format"] = (
+                    {"type": "json_schema", "json_schema": {"name": "response", "strict": True, "schema": json_schema}}
+                    if json_schema is not None else {"type": "json_object"}
+                )
             try:
                 r = requests.post(
                     f"{settings.OPENROUTER_BASE_URL}/chat/completions",
@@ -252,7 +284,15 @@ class OllamaClient:
                     timeout=settings.CLOUD_LLM_TIMEOUT_SECONDS,
                 )
                 r.raise_for_status()
-                answer = self._openrouter_answer_text(r.json())
+                data = r.json()
+                choices = data.get("choices") if isinstance(data, dict) else None
+                choice = choices[0] if isinstance(choices, list) and choices and isinstance(choices[0], dict) else {}
+                if json_format and choice.get("finish_reason") == "length":
+                    if attempt == 0:
+                        payload["max_tokens"] = min(payload["max_tokens"] * 2, 8192)
+                        continue
+                    raise ProviderOutputError("OpenRouter")
+                answer = self._openrouter_answer_text(data)
                 if answer:
                     return answer
                 if attempt < 1:
@@ -294,6 +334,7 @@ class OllamaClient:
             or "Too Many Requests" in message
             or message == "Gemini request failed."
             or message == "Gemini returned no user-facing answer."
+            or isinstance(error, ProviderOutputError)
         )
 
     @staticmethod

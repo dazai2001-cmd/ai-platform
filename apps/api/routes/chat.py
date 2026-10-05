@@ -183,8 +183,7 @@ def general_chat_stream():
     )
 
     def stream():
-        for token in generator:
-            yield token
+        yield from generator
 
     response = Response(stream_with_context(stream()), mimetype="text/plain")
     response.headers["X-Session-Id"] = session_id
@@ -224,8 +223,7 @@ def chat_stream():
         return error_response(e, 502, expose=False)
 
     def stream():
-        for token in generator:
-            yield token
+        yield from generator
 
     response = Response(stream_with_context(stream()), mimetype="text/plain")
     response.headers["X-Session-Id"] = session_id

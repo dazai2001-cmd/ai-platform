@@ -96,8 +96,7 @@ def ask_stream():
         generator, _, selected_model = rag_agent.stream_ask(question, session_id=session_id, model=model_settings.model_for("rag", user_id=user_id), user_id=user_id)
 
         def stream():
-            for token in generator:
-                yield token
+            yield from generator
 
         response = Response(stream_with_context(stream()), mimetype="text/plain")
         response.headers["X-Session-Id"] = session_id

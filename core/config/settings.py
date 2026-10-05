@@ -20,7 +20,7 @@ class Settings:
     APP_ENV = os.getenv("APP_ENV", "development").strip().lower()
     IS_PRODUCTION = APP_ENV == "production"
     APP_VERSION = os.getenv("APP_VERSION", "dev").strip() or "dev"
-    GIT_SHA = os.getenv("GIT_SHA", "unknown").strip()[:40] or "unknown"
+    GIT_SHA = (os.getenv("GIT_SHA") or os.getenv("RENDER_GIT_COMMIT") or "unknown").strip()[:40] or "unknown"
     DEBUG = os.getenv("DEBUG", "false").lower() == "true"
     SECRET_KEY = os.getenv("SECRET_KEY", "dev-secret-key")
     PORT = int(os.getenv("PORT", "5000"))
