@@ -230,8 +230,24 @@ def test_cloud_and_production_block_all_local_mutations_and_reads(local_client, 
     monkeypatch.setattr(routes, "media", access)
     headers = _bearer(owner["token"])
     assert local_client.get("/api/local/capabilities", headers=headers).get_json() == {"enabled": False}
+    assert local_client.get("/api/local/capabilities?media=false", headers=headers).get_json() == {"enabled": False}
     for method, path in [("get", "/api/local/runs"), ("post", "/api/local/runs"), ("get", "/api/local/media"),
                          ("post", "/api/local/runs/id/resume"), ("post", "/api/local/media/id/cancel"),
                          ("get", "/api/local/media/id/artifact"), ("delete", "/api/local/media/id")]:
         assert getattr(local_client, method)(path, headers=headers).status_code == 404
     access.assert_not_called()
+
+
+def test_runtime_capabilities_do_not_wait_for_media_probes(local_client, monkeypatch):
+    from services.local_agent import media_models
+    owner = _create_verified_session(local_client, "runtime-capabilities@example.com")
+    worker = Mock(side_effect=AssertionError("The runtime check must not start a media probe"))
+    models = Mock(side_effect=AssertionError("The runtime check must not inspect models"))
+    monkeypatch.setattr(media_models, "worker_info", worker)
+    monkeypatch.setattr(media_models, "catalogue", models)
+    response = local_client.get("/api/local/capabilities?media=false", headers=_bearer(owner["token"]))
+    assert response.status_code == 200
+    assert response.get_json()["enabled"] and response.get_json()["checkpoint_ready"]
+    assert response.get_json()["media_loading"]
+    worker.assert_not_called()
+    models.assert_not_called()

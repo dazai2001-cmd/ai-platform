@@ -23,17 +23,20 @@ def require_local_runtime():
 def capabilities():
     if not enabled():
         return jsonify({"enabled": False})
-    from services.local_agent.media_models import catalogue, worker_info
-    info = worker_info()
     try:
         from langgraph.checkpoint.sqlite import SqliteSaver  # noqa: F401
         checkpoint_ready = True
     except ImportError:
         checkpoint_ready = False
-    return jsonify({"enabled": True, "checkpoint_ready": checkpoint_ready, "orchestrator": settings.LOCAL_AGENT_MODEL,
+    result = {"enabled": True, "checkpoint_ready": checkpoint_ready, "orchestrator": settings.LOCAL_AGENT_MODEL,
         "context_tokens": settings.LOCAL_AGENT_CONTEXT_TOKENS, "max_model_calls": settings.LOCAL_AGENT_MAX_MODEL_CALLS,
-        "max_tool_calls": settings.LOCAL_AGENT_MAX_TOOL_CALLS, "models": catalogue(),
-        "media_device": settings.LOCAL_MEDIA_DEVICE, "worker": info, "video_worker": worker_info("video")})
+        "max_tool_calls": settings.LOCAL_AGENT_MAX_TOOL_CALLS}
+    # Runtime detection must not wait for Torch imports on a busy host laptop.
+    if request.args.get("media") == "false":
+        return jsonify({**result, "media_loading": True})
+    from services.local_agent.media_models import catalogue, worker_info
+    return jsonify({**result, "media_loading": False, "models": catalogue(),
+        "media_device": settings.LOCAL_MEDIA_DEVICE, "worker": worker_info(), "video_worker": worker_info("video")})
 
 
 def agents():

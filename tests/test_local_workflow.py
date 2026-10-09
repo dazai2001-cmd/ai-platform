@@ -12,7 +12,7 @@ from langgraph.types import Command
 from core.config.settings import settings
 from services.local_agent.media_models import MediaRequest
 from services.local_agent.state import LocalState, enabled
-from services.local_agent.workflow import build_graph, calculate, preferences_match, missing_media_details
+from services.local_agent.workflow import build_graph, calculate, preferences_match, missing_media_details, document_content_intent
 
 
 class ScriptedModel:
@@ -78,6 +78,36 @@ def test_specialized_rag_answer_keeps_verified_metadata_and_ends():
     result = graph_for(model, execute_workspace=execute).invoke(initial("When is the launch?"), {"configurable": {"thread_id": "rag"}})
     assert result["result"] == answer
     assert result["model_calls"] == 1
+
+
+@pytest.mark.parametrize("wrong_action", ["bi_ask", "docs_preview", "docs_list", "general_chat"])
+def test_document_question_rejects_wrong_source_and_recovers_to_rag(wrong_action):
+    query = "According to the uploaded handbook, who manages Cedar and what is its approved budget?"
+    answer = {"answer": "Nora; $4,200 [handbook.txt].", "route": "rag", "sources": [{"source": "handbook.txt"}]}
+    execute = Mock(return_value=answer)
+    model = ScriptedModel([call("workspace_tool", {"action": wrong_action, "query": query}, "wrong"),
+                           call("workspace_tool", {"action": "rag_ask", "query": query}, "correct")])
+    result = graph_for(model, execute_workspace=execute).invoke(initial(query), {"configurable": {"thread_id": "source"}})
+    assert execute.call_count == 1
+    assert execute.call_args.args[0].action == "rag_ask"
+    assert result["result"] == answer
+    assert result["trace"][0]["status"] == "rejected"
+    assert model.inputs[1][-1].status == "error"
+    assert "rag_ask" in model.inputs[1][-1].content
+
+
+@pytest.mark.parametrize("query,expected", [
+    ("Use my documents to find the launch date and cite the source.", True),
+    ("Summarize my uploaded PDF.", True),
+    ("Who manages Cedar according to the handbook?", True),
+    ("What is total revenue in the uploaded CSV?", False),
+    ("According to this Excel document, what is total revenue?", False),
+    ("List my documents.", False),
+    ("Open handbook.txt.", False),
+    ("Preview my report.", False),
+])
+def test_document_grounding_distinguishes_content_from_library_and_tables(query, expected):
+    assert document_content_intent(query) is expected
 
 
 def test_rag_clarification_pauses_and_resumes_without_repeating_the_read():

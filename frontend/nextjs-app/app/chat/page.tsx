@@ -100,14 +100,24 @@ export default function ChatPage() {
   useEffect(() => {
     if (!ready) return;
     let active = true;
-    api.localCapabilities().then((caps) => {
+    let retry: ReturnType<typeof setTimeout> | undefined;
+    const loadMedia = async () => {
+      try {
+        const caps = await api.localCapabilities();
+        if (active) setLocalCapabilities(caps);
+      } catch {
+        if (active) retry = setTimeout(() => void loadMedia(), 3000);
+      }
+    };
+    api.localCapabilities(false).then((caps) => {
       if (!active) return;
       setLocalCapabilities(caps);
       if (caps.enabled) updateState((current) => current.workspace.mode === "workspace" ? current : {
         ...current, workspace: { ...current.workspace, mode: "workspace" },
       });
+      if (caps.enabled) void loadMedia();
     }).catch(() => { if (active) setLocalCapabilities({ enabled: false }); });
-    return () => { active = false; };
+    return () => { active = false; clearTimeout(retry); };
   }, [ready, updateState]);
   const syncRunRef = useRef(0);
   const conversationsRef = useRef(conversations);

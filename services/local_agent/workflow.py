@@ -41,10 +41,10 @@ class CalculationInput(StrictInput):
 
 
 class WorkspaceInput(StrictInput):
-    action: WorkspaceAction
-    query: str = Field(min_length=1, max_length=4000)
-    dataset: str | None = Field(default=None, max_length=150)
-    document: str | None = Field(default=None, max_length=250)
+    action: WorkspaceAction = Field(description="For questions or searches about document CONTENT use rag_ask. docs_list only lists filenames; docs_preview only opens a known filename. For questions about uploaded table data use bi_ask; for ordinary conversation use general_chat.")
+    query: str = Field(min_length=1, max_length=4000, description="The user's full question or requested operation, preserving its subject and constraints.")
+    dataset: str | None = Field(default=None, max_length=150, description="Known uploaded dataset name for bi_ask; omit if unknown.")
+    document: str | None = Field(default=None, max_length=250, description="Exact known filename for docs_preview. A topic or search phrase is not a filename. Omit for rag_ask, which searches indexed content.")
     page: Literal["brain", "documents", "career", "dashboard", "memory", "analytics", "settings"] | None = None
 
 
@@ -111,6 +111,18 @@ def media_intent(text: str) -> str | None:
     if not match:
         return None
     return "video" if match.group(2).lower() in {"video", "clip"} else "image"
+
+
+def document_content_intent(text: str) -> bool:
+    """Recognize explicit document grounding without treating every upload as RAG."""
+    if re.search(r"\b(csv|excel|spreadsheet|datasets?)\b", text, re.I):
+        return False
+    source = r"\b(documents?|docs|handbook|manual|reports?|pdf|notes?)\b"
+    requested_source = re.search(
+        r"\b(according to|based on|from|in|using|use)\b.{0,80}?" + source, text, re.I | re.S
+    ) or re.search(r"\bsummari[sz]e\b.{0,80}?" + source, text, re.I | re.S)
+    content_question = re.search(r"\b(what|when|where|who|why|how|find|search|summari[sz]e|explain|cite)\b", text, re.I)
+    return bool(requested_source and content_question)
 
 
 def missing_media_details(text: str, kind: str) -> list[str]:
@@ -194,6 +206,10 @@ and usage. calculate performs arithmetic. media_models lists installed/ready gen
 models. generate_media starts a REAL local image/video job. ask_user pauses for an answer.
 Use workspace_tool general_chat for ordinary conversation; rag_ask for facts in documents;
 bi_ask for uploaded data. Do not claim a tool ran until it returned successfully.
+For any question asking to find, search, summarize or cite facts in documents, call
+workspace_tool with action="rag_ask" and the full question. The action is not a tool name.
+There is no docs_search action. docs_list returns filenames only. docs_preview opens
+a known filename only when the user wants to inspect that file; it cannot search content.
 Choose the tool and model for the user's goal. You may combine read tools to answer a request.
 For media, first establish subject/prompt, visual style, and size/aspect. For video also
 establish duration. Local LTX video uses a fixed 25 fps; use 25 unless the user requested
@@ -235,7 +251,13 @@ def build_graph(model, checkpointer, *, execute_workspace, submit_media, cancell
 
     @tool(args_schema=WorkspaceInput)
     def workspace_tool(action: str, query: str, dataset=None, document=None, page=None) -> str:
-        """Use a workspace action: RAG/BI/chat, documents, memory, career, settings or analytics."""
+        """Execute a workspace action. rag_ask searches indexed document content and answers with citations.
+
+        Use rag_ask for facts, summaries or searches in documents, including unknown filenames.
+        bi_ask answers questions about uploaded datasets. general_chat handles conversation.
+        docs_list lists filenames; docs_preview opens the exact known document filename only.
+        Other actions manage memory, career, settings, analytics or page navigation.
+        """
         return "Handled by the graph"
 
     @tool(args_schema=GenerationInput)
@@ -367,6 +389,10 @@ def build_graph(model, checkpointer, *, execute_workspace, submit_media, cancell
             elif call["name"] == "workspace_tool":
                 if media_intent(user_preferences(state["messages"])):
                     raise ValueError("This is a media request. Use ask_user, media_models and generate_media.")
+                if document_content_intent(user_preferences(state["messages"])) and args.action in {
+                    "bi_ask", "general_chat", "docs_list", "docs_preview"
+                }:
+                    raise ValueError("The user requested an answer from document content. Use workspace_tool with action='rag_ask' and preserve their full question; dataset queries and filename previews cannot answer it.")
                 # Enforce explicit intent for mutations outside the prompt layer.
                 current = user_preferences(state["messages"]).lower()
                 mutation_terms = {"memory_add_fact": r"\b(remember|save)\b", "note_ingest": r"\b(save|add|ingest)\b",

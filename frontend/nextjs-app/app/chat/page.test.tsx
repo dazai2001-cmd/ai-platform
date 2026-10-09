@@ -105,4 +105,17 @@ describe("ChatPage conversation loading", () => {
     expect(screen.queryByRole("link", { name: /Studio/ })).not.toBeInTheDocument();
     expect(apiMocks.generalChat).not.toHaveBeenCalled();
   });
+
+  it.each(["pending", "failed"])("keeps local Workspace enabled when media readiness is %s", async (state) => {
+    apiMocks.localCapabilities.mockImplementation((includeMedia = true) => !includeMedia
+      ? Promise.resolve({ enabled: true, checkpoint_ready: true, media_loading: true })
+      : state === "failed" ? Promise.reject(new Error("Request timed out")) : new Promise(() => {}));
+    apiMocks.chatConversations.mockResolvedValue([]);
+    render(<ChatPage />);
+    await screen.findByText(/Qwen brings the right tools/);
+    await waitFor(() => expect(apiMocks.localCapabilities).toHaveBeenCalledTimes(2));
+    expect(apiMocks.localCapabilities).toHaveBeenNthCalledWith(1, false);
+    expect(screen.queryByRole("button", { name: "General" })).not.toBeInTheDocument();
+    expect(screen.getByTestId("chat-window")).toBeInTheDocument();
+  });
 });

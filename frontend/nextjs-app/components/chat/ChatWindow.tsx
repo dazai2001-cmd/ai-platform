@@ -160,8 +160,34 @@ export default function ChatWindow({
     abortReasonRef.current = reason;
     clearStreamTimer();
     cancelStreamFrame();
-    controller.abort();
+    controller.abort(reason);
     cancelActiveReader();
+  };
+
+  const appendFinalAnswer = (res: ChatResult, resumeRunId?: string, query?: string) => {
+    setMessages((current) => {
+      const next = current.map((message) => message.needs_clarification && message.run_id === (resumeRunId || res.run_id)
+        ? { ...message, needs_clarification: false } : message);
+      const message: Message = {
+        role: "assistant", content: res.answer || "No answer returned.", sources: res.sources, chart: res.chart,
+        route: res.route, model: res.model, sql: res.sql, rows: res.rows, media_job: res.media_job,
+        needs_clarification: res.needs_clarification, run_id: res.run_id, clarification: res.clarification,
+      };
+      const last = next[next.length - 1];
+      if (last?.role === "assistant" && !last.content.trim()) {
+        next[next.length - 1] = message;
+        return next;
+      }
+      return [...next, message];
+    });
+    if (!mountedRef.current) return;
+    if (res.needs_clarification && res.run_id && onResume) {
+      setPendingQuestion({ runId: res.run_id, question: res.clarification || { kind: "clarification", question: res.answer }, query });
+      setToolsView(null);
+      setQuestionOpen(true);
+    } else {
+      setPendingQuestion(null);
+    }
   };
 
   const armStreamTimer = (controller: AbortController, reason: "startup-timeout" | "timeout") => {
@@ -189,16 +215,47 @@ export default function ChatWindow({
   useEffect(() => {
     if (!localCapabilities?.enabled || !sessionId || !onResume || disabled) return;
     let active = true;
+    let recoveryController: AbortController | undefined;
     const version = clarificationVersionRef.current;
     api.localRuns().then((runs) => {
       if (!active || version !== clarificationVersionRef.current) return;
-      const run = runs.find((item) => item.session_id === sessionId && item.status === "awaiting_input" && item.question);
-      if (run?.question) {
-        setPendingQuestion({ runId: run.id, question: run.question, query: run.query });
+      const ownRuns = runs.filter((item) => item.session_id === sessionId);
+      const paused = ownRuns.find((item) => item.status === "awaiting_input" && item.question);
+      if (paused?.question) {
+        setPendingQuestion({ runId: paused.id, question: paused.question, query: paused.query });
         setQuestionOpen(true);
+        return;
       }
+      // Recover results that completed while the user was on another page, as
+      // well as still-running tasks. Never replay a task or duplicate its answer.
+      const run = ownRuns.find((item) =>
+        item.status !== "cancelled" &&
+        !messagesRef.current.some((message) => message.run_id === item.id && !message.needs_clarification) &&
+        messagesRef.current.some((message) => (message.role === "user" && message.content === item.query) || message.run_id === item.id));
+      if (!run || activeControllerRef.current) return;
+      const controller = new AbortController();
+      recoveryController = controller;
+      activeControllerRef.current = controller;
+      setLoading(true);
+      void api.waitLocalTask(run.id, controller.signal).then((result) => {
+        if (active) appendFinalAnswer(result, run.id, run.query);
+      }).catch((error) => {
+        if (active && (!controller.signal.aborted || controller.signal.reason === "stopped")) {
+          const content = controller.signal.aborted ? "Response stopped." : `Error: ${error.message}`;
+          setMessages((current) => [...current, { role: "assistant", content, run_id: run.id }]);
+        }
+      }).finally(() => {
+        if (activeControllerRef.current === controller) {
+          activeControllerRef.current = null;
+          if (active) setLoading(false);
+        }
+      });
     }).catch(() => {});
-    return () => { active = false; };
+    return () => {
+      active = false;
+      recoveryController?.abort("unmount");
+      if (activeControllerRef.current === recoveryController) activeControllerRef.current = null;
+    };
   }, [localCapabilities?.enabled, sessionId, onResume, disabled, resetKey]);
 
   useEffect(() => {
@@ -236,48 +293,6 @@ export default function ChatWindow({
     activeControllerRef.current = controller;
     abortReasonRef.current = null;
     let streamHasContent = false;
-
-    const appendFinalAnswer = (res: ChatResult) => {
-      setMessages((current) => {
-        const next = [...current];
-        const last = next[next.length - 1];
-        const message = {
-          role: "assistant" as const,
-          content: res.answer || "No answer returned.",
-          sources: res.sources,
-          chart: res.chart,
-          route: res.route,
-          model: res.model,
-          sql: res.sql,
-          rows: res.rows,
-          media_job: res.media_job,
-          needs_clarification: res.needs_clarification,
-          run_id: res.run_id,
-          clarification: res.clarification,
-        };
-
-        for (let i = 0; i < next.length; i++) {
-          if (next[i].needs_clarification && next[i].run_id === (resumeRunId || res.run_id)) {
-            next[i] = { ...next[i], needs_clarification: false };
-          }
-        }
-
-        if (last?.role === "assistant" && !last.content.trim()) {
-          next[next.length - 1] = message;
-          return next;
-        }
-
-        return [...next, message];
-      });
-      if (!mountedRef.current) return;
-      if (res.needs_clarification && res.run_id && onResume) {
-        setPendingQuestion({ runId: res.run_id, question: res.clarification || { kind: "clarification", question: res.answer }, query: text });
-        setToolsView(null);
-        setQuestionOpen(true);
-      } else {
-        setPendingQuestion(null);
-      }
-    };
 
     const removeStreamDraft = () => {
       setMessages((current) => {
@@ -383,7 +398,7 @@ export default function ChatWindow({
 
       setMessages((current) => [...current, { role: "user", content: text }]);
       const res = await abortable(resumeRunId ? onResume!(resumeRunId, text, controller.signal) : onSend(text, controller.signal), controller.signal);
-      appendFinalAnswer(res);
+      appendFinalAnswer(res, resumeRunId, text);
     } catch (error) {
       clearStreamTimer();
       cancelStreamFrame();
@@ -398,7 +413,7 @@ export default function ChatWindow({
       if (onStream && !streamHasContent) {
         try {
           const res = await abortable(onSend(text, controller.signal), controller.signal);
-          appendFinalAnswer(res);
+          appendFinalAnswer(res, resumeRunId, text);
           return;
         } catch {
           if (controller.signal.aborted) {

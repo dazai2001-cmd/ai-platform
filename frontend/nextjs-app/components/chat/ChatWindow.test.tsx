@@ -184,6 +184,18 @@ describe("ChatWindow", () => {
     expect(screen.queryByRole("button", { name: "Stop response" })).not.toBeInTheDocument();
   });
 
+  it("marks a request as detached when its chat view unmounts", async () => {
+    const onSend = vi.fn((_message: string, _signal?: AbortSignal) => new Promise<any>(() => {}));
+    const { unmount } = render(<ChatWindow onSend={onSend} />);
+    fireEvent.change(screen.getByRole("textbox", { name: "Message" }), { target: { value: "Generate a preview" } });
+    fireEvent.keyDown(screen.getByRole("textbox", { name: "Message" }), { key: "Enter" });
+    await waitFor(() => expect(onSend).toHaveBeenCalled());
+    const signal = onSend.mock.calls[0][1] as AbortSignal;
+    unmount();
+    expect(signal.aborted).toBe(true);
+    expect(signal.reason).toBe("unmount");
+  });
+
   it("accepts a response when the server takes 45 seconds to connect", async () => {
     useFakeStreamTimers();
     try {

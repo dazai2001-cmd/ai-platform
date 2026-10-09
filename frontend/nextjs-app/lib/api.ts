@@ -41,6 +41,7 @@ export type LocalQuestion = {
 
 export type LocalCapabilities = {
   enabled: boolean;
+  media_loading?: boolean;
   checkpoint_ready?: boolean;
   orchestrator?: string;
   context_tokens?: number;
@@ -233,7 +234,10 @@ async function waitForLocalRun(runId: string, signal?: AbortSignal) {
     }
     return { answer: "The local task is still running. Open Activity in Workspace to follow its progress.", route: "local", run_id: runId };
   } catch (error) {
-    if (signal?.aborted) void post(`/api/local/runs/${encodeURIComponent(runId)}/cancel`, {}).catch(() => {});
+    // Leaving the view detaches polling; durable work is cancelled only by Stop.
+    if (signal?.aborted && signal.reason !== "unmount") {
+      void post(`/api/local/runs/${encodeURIComponent(runId)}/cancel`, {}).catch(() => {});
+    }
     throw error;
   }
 }
@@ -273,8 +277,9 @@ export const api = {
     request(`/api/chat/conversations/${id}`, { method: "DELETE", headers: headers() }),
 
   // These endpoints are disabled by the backend in cloud/production runtimes.
-  localCapabilities: () => get("/api/local/capabilities") as Promise<LocalCapabilities>,
+  localCapabilities: (includeMedia = true) => get(`/api/local/capabilities${includeMedia ? "" : "?media=false"}`) as Promise<LocalCapabilities>,
   localRuns: () => get("/api/local/runs") as Promise<LocalRun[]>,
+  waitLocalTask: (id: string, signal?: AbortSignal) => waitForLocalRun(id, signal),
   startLocalRun: (query: string, sessionId?: string) => post("/api/local/runs", { query, session_id: sessionId }) as Promise<LocalRun>,
   resumeLocalRun: (id: string, answer: string) => post(`/api/local/runs/${encodeURIComponent(id)}/resume`, { answer }) as Promise<LocalRun>,
   resumeLocalTask: async (id: string, answer: string, signal?: AbortSignal) => {

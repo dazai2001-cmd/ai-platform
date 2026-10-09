@@ -5,7 +5,7 @@ import ChatWindow from "./ChatWindow";
 import type { LocalCapabilities, LocalRun } from "@/lib/api";
 
 const mocks = vi.hoisted(() => ({
-  localRuns: vi.fn(), localMedia: vi.fn(), cancelLocalRun: vi.fn(), deleteLocalMedia: vi.fn(),
+  localRuns: vi.fn(), waitLocalTask: vi.fn(), localMedia: vi.fn(), cancelLocalRun: vi.fn(), deleteLocalMedia: vi.fn(),
   localArtifactUrl: vi.fn((path: string) => path),
 }));
 vi.mock("@/lib/api", () => ({ api: mocks }));
@@ -26,6 +26,7 @@ const paused: LocalRun = { id: "task-1", session_id: "chat-1", query: "Make a ca
 beforeEach(() => {
   Object.values(mocks).forEach((mock) => mock.mockClear());
   mocks.localRuns.mockResolvedValue([]); mocks.localMedia.mockResolvedValue([]); mocks.cancelLocalRun.mockResolvedValue({});
+  mocks.waitLocalTask.mockResolvedValue({ answer: "Recovered answer", run_id: "task-1" });
 });
 
 it("creates media through the Workspace conversation and keeps its answer in chat", async () => {
@@ -95,6 +96,65 @@ it("Answer later leaves a recovered task paused and lets the question be reopene
   expect(mocks.cancelLocalRun).not.toHaveBeenCalled();
   fireEvent.click(screen.getByRole("button", { name: "Answer pending question" }));
   expect(screen.getByRole("dialog", { name: "A quick clarification" })).toBeInTheDocument();
+});
+
+it.each(["running", "complete"])("recovers an undelivered %s task without starting it again", async (status) => {
+  mocks.localRuns.mockResolvedValue([{ ...paused, status, question: null }]);
+  mocks.waitLocalTask.mockResolvedValue({ answer: "Recovered answer", run_id: paused.id, route: "rag", sources: [{ source: "handbook.txt", score: 0.5 }] });
+  const onSend = vi.fn();
+  const onResume = vi.fn();
+  const onMessagesChange = vi.fn();
+  render(<ChatWindow onSend={onSend} onResume={onResume} localCapabilities={caps} sessionId="chat-1"
+    initialMessages={[{ role: "user", content: paused.query }]} onMessagesChange={onMessagesChange} />);
+
+  expect(await screen.findByText("Recovered answer")).toBeInTheDocument();
+  expect(mocks.waitLocalTask).toHaveBeenCalledWith(paused.id, expect.any(AbortSignal));
+  expect(onMessagesChange.mock.calls.at(-1)?.[0].at(-1)).toMatchObject({ run_id: paused.id, sources: [{ source: "handbook.txt" }] });
+  expect(onSend).not.toHaveBeenCalled();
+  expect(onResume).not.toHaveBeenCalled();
+});
+
+it("does not duplicate a completed task already saved in the conversation", async () => {
+  mocks.localRuns.mockResolvedValue([{ ...paused, status: "complete", question: null }]);
+  render(<ChatWindow onSend={vi.fn()} onResume={vi.fn()} localCapabilities={caps} sessionId="chat-1"
+    initialMessages={[{ role: "user", content: paused.query }, { role: "assistant", content: "Saved answer", run_id: paused.id }]} />);
+  await waitFor(() => expect(mocks.localRuns).toHaveBeenCalled());
+  expect(mocks.waitLocalTask).not.toHaveBeenCalled();
+  expect(screen.getAllByText("Saved answer")).toHaveLength(1);
+});
+
+it("detaches a recovered task when leaving the view", async () => {
+  mocks.localRuns.mockResolvedValue([{ ...paused, status: "running", question: null }]);
+  mocks.waitLocalTask.mockImplementation(() => new Promise(() => {}));
+  const { unmount } = render(<ChatWindow onSend={vi.fn()} onResume={vi.fn()} localCapabilities={caps} sessionId="chat-1"
+    initialMessages={[{ role: "user", content: paused.query }]} />);
+  await waitFor(() => expect(mocks.waitLocalTask).toHaveBeenCalled());
+  const signal = mocks.waitLocalTask.mock.calls[0][1] as AbortSignal;
+  unmount();
+  expect(signal.aborted).toBe(true);
+  expect(signal.reason).toBe("unmount");
+  expect(mocks.cancelLocalRun).not.toHaveBeenCalled();
+});
+
+it("shows Stop feedback for a recovered task", async () => {
+  mocks.localRuns.mockResolvedValue([{ ...paused, status: "running", question: null }]);
+  mocks.waitLocalTask.mockImplementation((_id: string, signal: AbortSignal) => new Promise((_resolve, reject) => {
+    signal.addEventListener("abort", () => reject(new DOMException("Stopped", "AbortError")), { once: true });
+  }));
+  render(<ChatWindow onSend={vi.fn()} onResume={vi.fn()} localCapabilities={caps} sessionId="chat-1"
+    initialMessages={[{ role: "user", content: paused.query }]} />);
+  fireEvent.click(await screen.findByRole("button", { name: "Stop response" }));
+  expect(await screen.findByText("Response stopped.")).toBeInTheDocument();
+  expect(screen.queryByText("Thinking...")).not.toBeInTheDocument();
+});
+
+it("does not recover a task that the user cancelled", async () => {
+  mocks.localRuns.mockResolvedValue([{ ...paused, status: "cancelled", question: null }]);
+  render(<ChatWindow onSend={vi.fn()} onResume={vi.fn()} localCapabilities={caps} sessionId="chat-1"
+    initialMessages={[{ role: "user", content: paused.query }, { role: "assistant", content: "Response stopped." }]} />);
+  await waitFor(() => expect(mocks.localRuns).toHaveBeenCalled());
+  expect(mocks.waitLocalTask).not.toHaveBeenCalled();
+  expect(screen.getAllByText("Response stopped.")).toHaveLength(1);
 });
 
 it("accepts a free-text reply without forcing suggested choices", async () => {

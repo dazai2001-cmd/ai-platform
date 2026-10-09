@@ -80,7 +80,7 @@ def worker_info(kind: str = "image") -> dict:
         cached = _probe_cache.get(executable)
         # Library/GPU availability is stable during a worker lifetime. Avoid
         # importing Torch in extra probe processes while a preview is running.
-        if cached and time.monotonic() - cached[0] < 600:
+        if cached and (cached[1].get("available") or time.monotonic() - cached[0] < 3):
             return dict(cached[1])
         info = _probe_worker(executable)
         _probe_cache[executable] = (time.monotonic(), info)
@@ -95,7 +95,9 @@ def _probe_worker(executable: str) -> dict:
         lines = [line for line in result.stdout.splitlines() if line.startswith("{")]
         if result.returncode == 0 and lines:
             return json.loads(lines[-1])
-    except (OSError, subprocess.TimeoutExpired, ValueError):
+    except subprocess.TimeoutExpired:
+        return {"available": False, "cuda": False, "reason": "The media environment took too long to load. Retry when the laptop is less busy."}
+    except (OSError, ValueError):
         pass
     return {"available": False, "cuda": False, "reason": "Install requirements-local-media.txt in a separate environment."}
 

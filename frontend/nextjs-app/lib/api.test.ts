@@ -356,4 +356,19 @@ describe("API client", () => {
     controller.abort();
     expect(requestSignal?.aborted).toBe(true);
   });
+
+  it.each(["unmount", "stopped"])("handles local task polling aborted by %s", async (reason) => {
+    const fetchMock = vi.fn((url: string) => url.endsWith("/cancel")
+      ? Promise.resolve(new Response(JSON.stringify({ status: "cancelled" }), { status: 200 }))
+      : new Promise<Response>(() => {}));
+    vi.stubGlobal("fetch", fetchMock);
+    const { api } = await import("./api");
+    const controller = new AbortController();
+    const assertion = expect(api.waitLocalTask("task-1", controller.signal)).rejects.toMatchObject({ name: "AbortError" });
+
+    controller.abort(reason);
+    await assertion;
+
+    expect(fetchMock.mock.calls.some(([url]) => url === "/api/local/runs/task-1/cancel")).toBe(reason === "stopped");
+  });
 });

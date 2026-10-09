@@ -55,7 +55,7 @@ export default function WorkspaceMediaDialog({ capabilities, onCreate, onClose }
       {kind === "video" && <p className="text-xs leading-5 text-muted">Experimental LTX video preview. Motion and shapes may be imperfect. Frame rounding can make the clip slightly longer than requested.</p>}
       <div className="rounded-lg border border-line-soft bg-soft/50 p-3">
         {models.map((model) => <p key={model.id} className="text-xs leading-5 text-muted">{model.id}: {model.reason} <a className="text-brand-ink" href={model.license_url} target="_blank" rel="noreferrer">Model license</a></p>)}
-        {!ready && <p role="status" className="mt-1 text-xs text-warning-ink">No local {kind} model is ready yet.</p>}
+        {!ready && <p role="status" className="mt-1 text-xs text-warning-ink">{capabilities.media_loading ? `Checking local ${kind} models…` : `No local ${kind} model is ready yet.`}</p>}
         {!capabilities.checkpoint_ready && <p role="alert" className="mt-1 text-xs text-danger-ink">The local checkpoint dependency needs to be installed.</p>}
       </div>
     </form>

@@ -236,3 +236,42 @@ def test_old_queued_model_fails_without_leaving_a_worker_lease(service, monkeypa
     assert failed["status"] == "failed" and not failed["worker_active"]
     assert "unsupported media settings" in failed["error"]
     popen.assert_not_called()
+
+
+def test_successful_media_probe_is_reused_for_the_worker_lifetime(monkeypatch):
+    from services.local_agent import media_models
+    monkeypatch.setattr(settings, "LOCAL_MEDIA_WORKER_URL", "")
+    monkeypatch.setattr(media_models, "_probe_cache", {})
+    monkeypatch.setattr(media_models, "worker_python", lambda kind: "test-python")
+    probe = Mock(return_value={"available": True, "cuda": False})
+    monkeypatch.setattr(media_models, "_probe_worker", probe)
+    clock = Mock(return_value=0)
+    monkeypatch.setattr(media_models.time, "monotonic", clock)
+    assert media_models.worker_info()["available"]
+    clock.return_value = 1000
+    assert media_models.worker_info()["available"]
+    probe.assert_called_once()
+
+
+def test_transient_media_probe_failure_is_retried_quickly(monkeypatch):
+    from services.local_agent import media_models
+    monkeypatch.setattr(settings, "LOCAL_MEDIA_WORKER_URL", "")
+    monkeypatch.setattr(media_models, "_probe_cache", {})
+    monkeypatch.setattr(media_models, "worker_python", lambda kind: "test-python")
+    probe = Mock(side_effect=[{"available": False}, {"available": True}])
+    monkeypatch.setattr(media_models, "_probe_worker", probe)
+    clock = Mock(return_value=0)
+    monkeypatch.setattr(media_models.time, "monotonic", clock)
+    assert not media_models.worker_info()["available"]
+    clock.return_value = 4
+    assert media_models.worker_info()["available"]
+    assert probe.call_count == 2
+
+
+def test_probe_timeout_explains_loading_delay_instead_of_missing_packages(monkeypatch):
+    from services.local_agent import media_models
+    monkeypatch.setattr(media_models.subprocess, "run", Mock(side_effect=media_models.subprocess.TimeoutExpired("test-python", 30)))
+    info = media_models._probe_worker("test-python")
+    assert not info["available"]
+    assert "took too long" in info["reason"]
+    assert "Install" not in info["reason"]
