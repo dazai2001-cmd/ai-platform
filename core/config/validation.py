@@ -88,6 +88,15 @@ def configuration_issues(config=settings) -> list[ConfigurationIssue]:
         "ANALYTICS_RETENTION_DAYS": config.ANALYTICS_RETENTION_DAYS,
         "CHUNK_SIZE": config.CHUNK_SIZE,
         "TOP_K": config.TOP_K,
+        "RAG_AGENTIC_MAX_SEARCHES": config.RAG_AGENTIC_MAX_SEARCHES,
+        "RAG_AGENTIC_MAX_MODEL_CALLS": config.RAG_AGENTIC_MAX_MODEL_CALLS,
+        "LOCAL_AGENT_MAX_MODEL_CALLS": config.LOCAL_AGENT_MAX_MODEL_CALLS,
+        "LOCAL_AGENT_MAX_TOOL_CALLS": config.LOCAL_AGENT_MAX_TOOL_CALLS,
+        "LOCAL_AGENT_MAX_ACTIVE_RUNS": config.LOCAL_AGENT_MAX_ACTIVE_RUNS,
+        "LOCAL_MEDIA_TIMEOUT_SECONDS": config.LOCAL_MEDIA_TIMEOUT_SECONDS,
+        "LOCAL_MEDIA_MAX_QUEUED": config.LOCAL_MEDIA_MAX_QUEUED,
+        "LOCAL_MEDIA_MAX_STORAGE_MB": config.LOCAL_MEDIA_MAX_STORAGE_MB,
+        "LOCAL_MEDIA_MIN_AVAILABLE_RAM_MB": config.LOCAL_MEDIA_MIN_AVAILABLE_RAM_MB,
         "EMBED_DIM": getattr(config, "EMBED_DIM", 384),
         "EMBED_BATCH_SIZE": getattr(config, "EMBED_BATCH_SIZE", 32),
         "EMBED_RETRY_BASE_SECONDS": getattr(config, "EMBED_RETRY_BASE_SECONDS", 1),
@@ -99,6 +108,16 @@ def configuration_issues(config=settings) -> list[ConfigurationIssue]:
     for name, value in positive_values.items():
         if value <= 0:
             issues.append(ConfigurationIssue(name, "must be greater than zero"))
+
+    if config.RAG_AGENTIC_CONTEXT_TOKENS < 2048:
+        issues.append(ConfigurationIssue("RAG_AGENTIC_CONTEXT_TOKENS", "must be at least 2048"))
+    if config.LOCAL_AGENT_CONTEXT_TOKENS < 4096:
+        issues.append(ConfigurationIssue("LOCAL_AGENT_CONTEXT_TOKENS", "must be at least 4096 for the workspace tool schemas"))
+    if config.LOCAL_MEDIA_DEVICE not in {"cpu", "cuda"}:
+        issues.append(ConfigurationIssue("LOCAL_MEDIA_DEVICE", "must be cpu or cuda"))
+    if not config.IS_CLOUD_RUNTIME and not config.IS_PRODUCTION and config.LOCAL_AGENT_ENABLED:
+        if not config.LOCAL_AGENT_MODEL or config.LOCAL_AGENT_MODEL.startswith(("gemini:", "openrouter:")):
+            issues.append(ConfigurationIssue("LOCAL_AGENT_MODEL", "must be a local Ollama model"))
 
     if config.CHUNK_OVERLAP < 0 or config.CHUNK_OVERLAP >= config.CHUNK_SIZE:
         issues.append(ConfigurationIssue("CHUNK_OVERLAP", "must be non-negative and smaller than CHUNK_SIZE"))

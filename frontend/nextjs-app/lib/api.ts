@@ -19,6 +19,49 @@ export type CareerProfileImportResult = {
   used_ocr: boolean;
 };
 
+export type LocalMediaJob = {
+  id: string;
+  kind: "image" | "video";
+  status: "queued" | "running" | "succeeded" | "failed" | "cancelled" | "interrupted";
+  progress: number;
+  message: string;
+  artifact_url?: string | null;
+  error?: string | null;
+  worker_active?: boolean;
+  spec: { prompt: string; style: string; width: number; height: number; model_id: string; seconds?: number; fps?: number };
+};
+
+export type LocalQuestion = {
+  kind: string;
+  question: string;
+  options?: string[];
+  fields?: { id: string; label: string; options: string[] }[];
+  draft?: Record<string, unknown>;
+};
+
+export type LocalCapabilities = {
+  enabled: boolean;
+  checkpoint_ready?: boolean;
+  orchestrator?: string;
+  context_tokens?: number;
+  models?: { id: string; kind: string; ready: boolean; installed: boolean; reason: string; description: string; license_url: string }[];
+};
+
+export type LocalRun = {
+  id: string;
+  session_id: string;
+  query: string;
+  status: string;
+  message?: string | null;
+  model: string;
+  model_calls: number;
+  tool_calls: number;
+  trace: { tool: string; action?: string; status: string; model?: string }[];
+  question?: LocalQuestion | null;
+  result?: { answer: string; media_job?: LocalMediaJob; [key: string]: any } | null;
+  error?: string | null;
+};
+
 function timeoutError() {
   const error = new Error("Request timed out");
   error.name = "TimeoutError";
@@ -164,6 +207,37 @@ async function upload(path: string, formData: FormData) {
   return request(path, { method: "POST", headers: headers(), body: formData });
 }
 
+async function waitForLocalRun(runId: string, signal?: AbortSignal) {
+  const started = Date.now();
+  try {
+    while (Date.now() - started < 300_000) {
+      if (signal?.aborted) throw abortError(signal);
+      const run: LocalRun = await request(`/api/local/runs/${encodeURIComponent(runId)}`, { signal });
+      if (run.status === "awaiting_input") {
+        return { answer: run.question?.question || "Please clarify your request.", needs_clarification: true,
+                 clarification: run.question, run_id: run.id, route: "local", model: run.model };
+      }
+      if (["complete", "limited"].includes(run.status)) {
+        return { ...run.result, answer: run.result?.answer || "Task complete.", run_id: run.id,
+                 model: run.result?.model || run.model, route: run.result?.route || "local" };
+      }
+      if (["failed", "cancelled", "interrupted"].includes(run.status)) {
+        throw new Error(run.error || `Local task ${run.status}.`);
+      }
+      await new Promise<void>((resolve, reject) => {
+        const onAbort = () => { clearTimeout(timer); signal?.removeEventListener("abort", onAbort); reject(abortError(signal!)); };
+        const timer = setTimeout(() => { signal?.removeEventListener("abort", onAbort); resolve(); }, 1000);
+        signal?.addEventListener("abort", onAbort, { once: true });
+        if (signal?.aborted) onAbort();
+      });
+    }
+    return { answer: "The local task is still running. Open Activity in Workspace to follow its progress.", route: "local", run_id: runId };
+  } catch (error) {
+    if (signal?.aborted) void post(`/api/local/runs/${encodeURIComponent(runId)}/cancel`, {}).catch(() => {});
+    throw error;
+  }
+}
+
 export const api = {
   signup: (email: string, password: string) => post("/api/auth/signup", { email, password }),
   login: (email: string, password: string) => post("/api/auth/login", { email, password }),
@@ -177,8 +251,10 @@ export const api = {
     post("/api/chat", { query, session_id: sessionId, dataset }, signal),
   chatStream: (query: string, sessionId?: string, dataset?: string, signal?: AbortSignal) =>
     postRaw("/api/chat/stream", { query, session_id: sessionId, dataset }, signal),
-  workspaceChat: (query: string, sessionId?: string, signal?: AbortSignal) =>
-    post("/api/chat/workspace", { query, session_id: sessionId }, signal),
+  workspaceChat: async (query: string, sessionId?: string, signal?: AbortSignal) => {
+    const result = await post("/api/chat/workspace", { query, session_id: sessionId }, signal);
+    return result.local_run ? waitForLocalRun(result.local_run, signal) : result;
+  },
   generalChat: (query: string, sessionId?: string, model?: string, signal?: AbortSignal) =>
     post("/api/chat/general", { query, session_id: sessionId, model }, signal),
   generalChatStream: (query: string, sessionId?: string, model?: string, signal?: AbortSignal) =>
@@ -195,6 +271,22 @@ export const api = {
     }),
   deleteChatConversation: (id: string) =>
     request(`/api/chat/conversations/${id}`, { method: "DELETE", headers: headers() }),
+
+  // These endpoints are disabled by the backend in cloud/production runtimes.
+  localCapabilities: () => get("/api/local/capabilities") as Promise<LocalCapabilities>,
+  localRuns: () => get("/api/local/runs") as Promise<LocalRun[]>,
+  startLocalRun: (query: string, sessionId?: string) => post("/api/local/runs", { query, session_id: sessionId }) as Promise<LocalRun>,
+  resumeLocalRun: (id: string, answer: string) => post(`/api/local/runs/${encodeURIComponent(id)}/resume`, { answer }) as Promise<LocalRun>,
+  resumeLocalTask: async (id: string, answer: string, signal?: AbortSignal) => {
+    await post(`/api/local/runs/${encodeURIComponent(id)}/resume`, { answer }, signal);
+    return waitForLocalRun(id, signal);
+  },
+  cancelLocalRun: (id: string) => post(`/api/local/runs/${encodeURIComponent(id)}/cancel`, {}),
+  localMedia: () => get("/api/local/media") as Promise<LocalMediaJob[]>,
+  localMediaJob: (id: string) => get(`/api/local/media/${encodeURIComponent(id)}`) as Promise<LocalMediaJob>,
+  cancelLocalMedia: (id: string) => post(`/api/local/media/${encodeURIComponent(id)}/cancel`, {}),
+  deleteLocalMedia: (id: string) => request(`/api/local/media/${encodeURIComponent(id)}`, { method: "DELETE" }),
+  localArtifactUrl: (path: string) => `${baseUrl()}${path}`,
 
   // RAG
   ragAsk: (question: string, sessionId?: string, signal?: AbortSignal) =>

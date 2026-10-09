@@ -38,6 +38,12 @@ class MemoryService:
 
     def clear(self, session_id: str, user_id: str = "local"):
         db.execute("DELETE FROM memory_messages WHERE user_id = ? AND session_id = ?", (user_id, session_id))
+        from services.local_agent.state import enabled as local_enabled
+        if local_enabled():
+            import hashlib
+            from services.local_agent.state import LocalState
+            summary_id = hashlib.sha256(f"{user_id}:{session_id}".encode()).hexdigest()
+            LocalState().delete("context", summary_id, user_id)
 
     def list_sessions(self, user_id: str = "local") -> list[str]:
         rows = db.query("SELECT DISTINCT session_id FROM memory_messages WHERE user_id = ? ORDER BY session_id", (user_id,))

@@ -1,0 +1,7 @@
+# Install separately; these are not production application dependencies.
+langchain==1.2.10
+langchain-core==1.4.0
+langgraph==1.0.10
+langgraph-checkpoint==4.1.1
+langchain-ollama==1.1.0
+langgraph-checkpoint-sqlite==3.1.1

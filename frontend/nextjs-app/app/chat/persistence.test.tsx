@@ -17,6 +17,9 @@ const apiMocks = vi.hoisted(() => ({
   workspaceChat: vi.fn(),
   generalChat: vi.fn(),
   generalChatStream: vi.fn(),
+  localCapabilities: vi.fn(),
+  localRuns: vi.fn(),
+  resumeLocalTask: vi.fn(),
   ragAsk: vi.fn(),
   ragAskStream: vi.fn(),
   biDatasets: vi.fn(),
@@ -63,6 +66,8 @@ describe("Chat persistence across pages", () => {
     auth.owner = "owner-a";
     auth.loading = false;
     Object.values(apiMocks).forEach((mock) => mock.mockReset());
+    apiMocks.localCapabilities.mockResolvedValue({ enabled: false });
+    apiMocks.localRuns.mockResolvedValue([]);
     apiMocks.chatConversations.mockResolvedValue([]);
     apiMocks.createChatConversation.mockImplementation(async (id, title) => ({
       id, title, messages: [], createdAt: Date.now(), updatedAt: Date.now(),
@@ -166,7 +171,7 @@ describe("Chat persistence across pages", () => {
     apiMocks.chatConversations.mockRejectedValue(new Error("Server unavailable"));
     render(<App />);
 
-    expect(screen.getByRole("button", { name: "General" })).toHaveAttribute("aria-pressed", "true");
+    expect(await screen.findByRole("button", { name: "General" })).toHaveAttribute("aria-pressed", "true");
     expect(screen.getByRole("button", { name: "Workspace" })).toHaveAttribute("aria-pressed", "false");
     expect(screen.getByRole("heading", { name: "General Chat" })).toBeInTheDocument();
     expect(screen.getByText("Remember my general chat", { selector: "p" })).toBeInTheDocument();
@@ -175,6 +180,27 @@ describe("Chat persistence across pages", () => {
     await waitFor(() => expect(apiMocks.generalChatStream).toHaveBeenCalledTimes(2));
     expect(apiMocks.generalChatStream.mock.calls[1][1]).toBe(sessionId);
     expect(apiMocks.workspaceChat).not.toHaveBeenCalled();
+  });
+
+  it("moves a saved General conversation into local Workspace without losing history", async () => {
+    const user = userEvent.setup();
+    const view = render(<App />);
+    await screen.findByText("Conversations synced");
+    await user.click(screen.getByRole("button", { name: "General" }));
+    await user.type(screen.getByRole("textbox", { name: "Message" }), "Keep this conversation{Enter}");
+    await screen.findByText("General answer");
+    const sessionId = apiMocks.generalChatStream.mock.calls[0][1];
+    view.unmount();
+    apiMocks.localCapabilities.mockResolvedValue({ enabled: true });
+    apiMocks.chatConversations.mockRejectedValue(new Error("Server unavailable"));
+    render(<App />);
+    await screen.findByText(/Qwen brings the right tools/);
+    expect(screen.queryByRole("button", { name: "General" })).not.toBeInTheDocument();
+    expect(screen.getByText("General answer")).toBeInTheDocument();
+    await user.type(screen.getByRole("textbox", { name: "Message" }), "Continue here{Enter}");
+    await screen.findByText("Answer to Continue here");
+    expect(apiMocks.workspaceChat).toHaveBeenCalledWith("Continue here", sessionId, expect.any(AbortSignal));
+    expect(apiMocks.generalChatStream).toHaveBeenCalledTimes(1);
   });
 
   it("retains Workspace and General messages, the active conversation, and mode after leaving", async () => {

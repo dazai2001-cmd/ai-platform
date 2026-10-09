@@ -172,11 +172,13 @@ class PipelineAdapter:
             user_id=self.user_id,
             retrieval_results=retrieval_results,
         )
-        contexts = [
-            item.get("metadata", {}).get("text", "")
-            for item in retrieval_results
-            if isinstance(item, Mapping)
-        ]
+        contexts = result.get("retrieved_contexts")
+        if contexts is None:
+            contexts = [
+                item.get("metadata", {}).get("text", "")
+                for item in retrieval_results
+                if isinstance(item, Mapping)
+            ]
         return RAGOutput.from_value({**result, "contexts": contexts})
 
 

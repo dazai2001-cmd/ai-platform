@@ -126,7 +126,14 @@ class WorkspaceRouter:
         dataset_name: str | None = None,
     ) -> dict[str, Any]:
         decision = self.route(query, user_id=user_id)
+        return self.execute(decision, query, session_id, user_id=user_id, dataset_name=dataset_name)
+
+    def execute(self, decision: dict[str, Any], query: str, session_id: str,
+                user_id: str = "local", dataset_name: str | None = None) -> dict[str, Any]:
+        """Execute a validated decision without making another router model call."""
         action = decision["action"]
+        if action not in WORKSPACE_ACTIONS:
+            raise ValueError("Unknown workspace action")
         args = decision.get("arguments") or {}
         t0 = time.monotonic()
 

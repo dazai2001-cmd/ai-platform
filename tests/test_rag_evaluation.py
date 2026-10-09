@@ -42,6 +42,19 @@ def make_dataset(**case_updates):
 
 
 class RAGEvaluationTests(unittest.TestCase):
+    def test_adapter_scores_the_context_selected_by_the_agentic_pipeline(self):
+        class Retriever:
+            def search(self, question, user_id):
+                return [{"metadata": {"text": "Initial irrelevant hit."}}]
+
+        class Pipeline:
+            def ask(self, question, **kwargs):
+                return {"answer": "Avery Chen.", "sources": ["directory.md"],
+                        "retrieved_contexts": ["The release captain is Avery Chen."]}
+
+        result = PipelineAdapter(Retriever(), Pipeline()).ask("Who?", {})
+        self.assertEqual(result.contexts, ("The release captain is Avery Chen.",))
+
     def test_live_adapter_reuses_one_retrieval_for_answer_and_metrics(self):
         retrieved = [{"metadata": {"source": "handbook.md", "text": "Launch is in September."}}]
 

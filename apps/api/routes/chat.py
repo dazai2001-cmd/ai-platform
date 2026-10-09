@@ -12,6 +12,7 @@ from apps.api.errors import error_response
 from services.chat.conversation_service import conversations
 from apps.api.auth_context import current_user_id
 from services.settings.model_settings_service import model_settings
+from services.local_agent import conversation as local_conversation
 
 chat_bp = Blueprint("chat", __name__, url_prefix="/api/chat")
 router = QueryRouter()
@@ -32,7 +33,7 @@ def create_conversation():
     )
     if not conversation:
         return jsonify({"error": "conversation id already exists"}), 409
-    return jsonify(conversation)
+    return jsonify(local_conversation.hydrate(conversation, current_user_id()))
 
 
 @chat_bp.get("/conversations/<conversation_id>")
@@ -40,7 +41,7 @@ def get_conversation(conversation_id: str):
     conversation = conversations.get(conversation_id, user_id=current_user_id())
     if not conversation:
         return jsonify({"error": "conversation not found"}), 404
-    return jsonify(conversation)
+    return jsonify(local_conversation.hydrate(conversation, current_user_id()))
 
 
 @chat_bp.put("/conversations/<conversation_id>")
@@ -54,12 +55,14 @@ def save_conversation(conversation_id: str):
     )
     if not conversation:
         return jsonify({"error": "conversation not found"}), 404
-    return jsonify(conversation)
+    local_conversation.save_references(conversation_id, data.get("messages") or [], current_user_id())
+    return jsonify(local_conversation.hydrate(conversation, current_user_id()))
 
 
 @chat_bp.delete("/conversations/<conversation_id>")
 def delete_conversation(conversation_id: str):
     conversations.delete(conversation_id, user_id=current_user_id())
+    local_conversation.clear_references(conversation_id, current_user_id())
     return jsonify({"deleted": True})
 
 
@@ -123,6 +126,21 @@ def workspace_chat():
         return jsonify({"error": "query is required"}), 400
 
     try:
+        from services.local_agent.state import enabled as local_enabled
+        if local_enabled():
+            try:
+                from services.local_agent.agent_service import agent_service
+                service = agent_service()
+                user_id = current_user_id()
+                paused = next((run for run in service.list(user_id) if run["session_id"] == session_id
+                               and run["status"] == "awaiting_input"), None)
+                run = service.resume(paused["id"], query, user_id) if paused else service.start(query, session_id, user_id)
+                return jsonify({"answer": "Working on your local task…", "route": "local", "model": run["model"],
+                                "session_id": session_id, "local_run": run["id"]}), 202
+            except ValueError as e:
+                return error_response(e, 400)
+            except ImportError:
+                return jsonify({"error": "Install requirements-local-agent.txt to enable local workflows."}), 503
         result = workspace_router.handle(
             query,
             session_id=session_id,

@@ -27,6 +27,8 @@ class OllamaClient:
         }
         if settings.OLLAMA_NUM_GPU >= 0:
             options["num_gpu"] = settings.OLLAMA_NUM_GPU
+        if settings.LOCAL_AGENT_ENABLED and not settings.IS_CLOUD_RUNTIME and not settings.IS_PRODUCTION:
+            options["num_ctx"] = settings.LOCAL_AGENT_CONTEXT_TOKENS
         return options
 
     @staticmethod
@@ -170,6 +172,14 @@ class OllamaClient:
             return r.status_code == 200
         except Exception:
             return False
+
+    def unload_local_model(self, model: str) -> None:
+        """Release the orchestrator before a media worker competes for memory."""
+        provider, provider_model = self._provider_for(model)
+        if provider != "ollama":
+            raise ValueError("Only local Ollama models can be unloaded.")
+        response = requests.post(f"{self.base_url}/api/generate", json={"model": provider_model, "keep_alive": 0}, timeout=30)
+        response.raise_for_status()
 
     def list_models(self) -> list[str]:
         if settings.IS_CLOUD_RUNTIME:

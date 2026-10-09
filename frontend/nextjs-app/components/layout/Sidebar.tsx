@@ -96,7 +96,7 @@ export default function Sidebar() {
               <span className="min-w-0">
                 <span className="block truncate text-xs font-medium lg:text-sm">{label}</span>
                 <span className={clsx("hidden text-xs lg:block", active ? "text-brand-ink/75" : "text-muted-soft")}>
-                  {desc}
+                  {href === "/chat" && !isCloud ? "Workspace" : desc}
                 </span>
               </span>
             </Link>

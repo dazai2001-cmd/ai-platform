@@ -21,7 +21,7 @@ import {
 } from "lucide-react";
 import clsx from "clsx";
 import ChatWindow, { type Message } from "@/components/chat/ChatWindow";
-import { api } from "@/lib/api";
+import { api, type LocalCapabilities } from "@/lib/api";
 import { conversationTimestamp, createLocalConversation, useChatState, type ChatMode, type Conversation } from "@/lib/chat-state";
 type ConversationSyncStatus = "syncing" | "synced" | "offline";
 
@@ -80,7 +80,9 @@ function titleFromMessages(messages: Message[]) {
 
 export default function ChatPage() {
   const { state, updateState, ready, saving, saveError, flushConversations, waitForSave } = useChatState();
-  const { conversations, activeId, mode } = state.workspace;
+  const { conversations, activeId } = state.workspace;
+  const [localCapabilities, setLocalCapabilities] = useState<LocalCapabilities | null>(null);
+  const mode = localCapabilities?.enabled === false ? state.workspace.mode : "workspace";
   const [initialConversation] = useState(() => conversations.find((item) => item.id === activeId) || conversations[0]);
   const [loadStatus, setLoadStatus] = useState<ConversationSyncStatus>("syncing");
   const [loadError, setLoadError] = useState("");
@@ -95,6 +97,18 @@ export default function ChatPage() {
   const setMode = (next: ChatMode) => {
     updateState((current) => ({ ...current, workspace: { ...current.workspace, mode: next } }));
   };
+  useEffect(() => {
+    if (!ready) return;
+    let active = true;
+    api.localCapabilities().then((caps) => {
+      if (!active) return;
+      setLocalCapabilities(caps);
+      if (caps.enabled) updateState((current) => current.workspace.mode === "workspace" ? current : {
+        ...current, workspace: { ...current.workspace, mode: "workspace" },
+      });
+    }).catch(() => { if (active) setLocalCapabilities({ enabled: false }); });
+    return () => { active = false; };
+  }, [ready, updateState]);
   const syncRunRef = useRef(0);
   const conversationsRef = useRef(conversations);
   const activeIdRef = useRef(activeId);
@@ -285,6 +299,8 @@ export default function ChatPage() {
     api.generalChat(message, activeId, undefined, signal);
   const handleGeneralStream = async (message: string, signal?: AbortSignal) =>
     api.generalChatStream(message, activeId, undefined, signal);
+  const handleResume = useCallback((runId: string, answer: string, signal?: AbortSignal) =>
+    api.resumeLocalTask(runId, answer, signal), []);
 
   return (
     <div className="flex h-[calc(100dvh-176px)] min-h-[560px] flex-col lg:h-dvh lg:min-h-0 lg:flex-row">
@@ -340,7 +356,7 @@ export default function ChatPage() {
           </div>
         </div>
 
-        <div className="mb-4 grid grid-cols-2 rounded-md border border-line-soft bg-panel/70 p-1">
+        {localCapabilities?.enabled === false && <div className="mb-4 grid grid-cols-2 rounded-md border border-line-soft bg-panel/70 p-1">
           {(["workspace", "general"] as const).map((item) => (
             <button
               key={item}
@@ -355,7 +371,7 @@ export default function ChatPage() {
               {item === "workspace" ? "Workspace" : "General"}
             </button>
           ))}
-        </div>
+        </div>}
 
         <div className="flex gap-2 overflow-x-auto pb-1 lg:block lg:space-y-2 lg:overflow-visible lg:pb-0">
           {conversations.map((conversation) => (
@@ -407,7 +423,9 @@ export default function ChatPage() {
                 <h1 className="text-lg font-semibold text-ink">{mode === "workspace" ? "AI Workspace" : "General Chat"}</h1>
                 <p className="text-sm text-muted">
                   {mode === "workspace"
-                    ? "Ask normally, or use tool commands for documents, memory, models, analytics, and career jobs."
+                    ? localCapabilities?.enabled
+                      ? "Chat, work with your documents, or create media. Qwen brings the right tools into this conversation."
+                      : "Ask normally, or use tool commands for documents, memory, models, analytics, and career jobs."
                     : "Fast streaming chat with the selected general model."}
                 </p>
               </div>
@@ -439,6 +457,9 @@ export default function ChatPage() {
             <ChatWindow
               key={`${activeConversation.id}:${mode}`}
               onSend={mode === "workspace" ? handleWorkspaceSend : handleGeneralSend}
+              onResume={localCapabilities?.enabled ? handleResume : undefined}
+              localCapabilities={localCapabilities}
+              sessionId={activeConversation.id}
               disabled={!ready || !activeConversation.loaded}
               onStream={mode === "general" ? handleGeneralStream : undefined}
               streamMeta={{ route: mode === "general" ? "general" : "workspace" }}
@@ -447,7 +468,9 @@ export default function ChatPage() {
               onMessagesChange={updateActiveMessages}
               placeholder={
                 mode === "workspace"
-                  ? "Ask about docs, memory, models, analytics, jobs, or a normal question..."
+                  ? localCapabilities?.enabled
+                    ? "Ask a question, use your documents, or describe an image or video…"
+                    : "Ask about docs, memory, models, analytics, jobs, or a normal question..."
                   : "Ask a general question..."
               }
               emptyTitle={mode === "workspace" ? "Command your AI workspace" : "Chat with your AI assistant"}

@@ -5,6 +5,9 @@
 
 __pycache__/
 .venv/
+.venv-media/
+.venv-video-test/
+.venv-video/
 *.py[cod]
 .pytest_cache/
 .coverage
@@ -21,6 +24,7 @@ supabase/.temp/
 data/raw/
 data/uploads/
 data/cache/
+data/models/
 data/indexes/
 data/processed/
 

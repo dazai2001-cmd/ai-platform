@@ -31,6 +31,7 @@ _LIMIT_GROUPS = {
             "career.tailor", "career.cover_letter", "career.pack",
             "career.import_job_url", "career.search_jobs", "career.search_jobs_stream",
             "career.score_job", "career.generate_match_pack", "career.create_score_batch",
+            "local.start_run", "local.resume_run",
         ),
     ),
     "upload": (

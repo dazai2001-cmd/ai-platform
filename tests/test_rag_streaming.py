@@ -116,6 +116,8 @@ def test_brain_retrieval_failure_records_query_failure(brain):
 def test_streaming_and_regular_qa_share_bounded_conversation_context(monkeypatch):
     from domain.rag import pipeline as pipeline_module
 
+    monkeypatch.setattr(settings, "RAG_AGENTIC_ENABLED", False)
+
     retriever = Mock()
     retriever.search.return_value = []
     retriever.format_context.return_value = "Juniper has a budget of 123 dollars."

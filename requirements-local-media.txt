@@ -1,0 +1,11 @@
+# Install in .venv-media, separately from the API/RAG environment.
+# Torch is deliberately not pinned here: retain CPU torch, or install a CUDA
+# build explicitly in that environment before using the experimental video model.
+diffusers==0.35.2
+transformers==4.57.6
+accelerate==1.15.0
+safetensors==0.8.0
+imageio==2.38.0
+imageio-ffmpeg==0.6.0
+sentencepiece==0.2.1
+protobuf==6.33.0

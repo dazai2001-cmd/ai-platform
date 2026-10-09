@@ -1,9 +1,14 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { Download, Loader2, Send, Sparkles, Square } from "lucide-react";
+import { Activity, Download, Loader2, MessageCircleQuestion, Send, Sparkles, Square, WandSparkles } from "lucide-react";
 import clsx from "clsx";
 import { STREAM_INACTIVITY_TIMEOUT_MS, STREAM_START_TIMEOUT_MS } from "@/lib/request-timeouts";
+import { api, type LocalCapabilities, type LocalMediaJob, type LocalQuestion, type LocalRun } from "@/lib/api";
+import LocalMediaCard from "@/components/chat/LocalMediaCard";
+import ClarificationDialog from "@/components/chat/ClarificationDialog";
+import WorkspaceMediaDialog from "@/components/chat/WorkspaceMediaDialog";
+import WorkspaceActivityDialog from "@/components/chat/WorkspaceActivityDialog";
 
 export { STREAM_INACTIVITY_TIMEOUT_MS, STREAM_START_TIMEOUT_MS } from "@/lib/request-timeouts";
 
@@ -17,6 +22,10 @@ type ChatResult = {
   model?: string;
   sql?: string | null;
   rows?: Record<string, any>[];
+  media_job?: LocalMediaJob;
+  needs_clarification?: boolean;
+  run_id?: string;
+  clarification?: LocalQuestion | null;
 };
 
 function abortError() {
@@ -56,12 +65,19 @@ export interface Message {
   model?: string;
   sql?: string | null;
   rows?: Record<string, any>[];
+  media_job?: LocalMediaJob;
+  needs_clarification?: boolean;
+  run_id?: string;
+  clarification?: LocalQuestion | null;
 }
 
 const EMPTY_MESSAGES: Message[] = [];
 
 interface Props {
   onSend: (message: string, signal?: AbortSignal) => Promise<ChatResult>;
+  onResume?: (runId: string, answer: string, signal?: AbortSignal) => Promise<ChatResult>;
+  localCapabilities?: LocalCapabilities | null;
+  sessionId?: string;
   onStream?: (message: string, signal?: AbortSignal) => Promise<Response>;
   streamMeta?: { route?: string; model?: string };
   initialMessages?: Message[];
@@ -76,6 +92,9 @@ interface Props {
 
 export default function ChatWindow({
   onSend,
+  onResume,
+  localCapabilities,
+  sessionId,
   onStream,
   streamMeta,
   initialMessages = EMPTY_MESSAGES,
@@ -91,6 +110,11 @@ export default function ChatWindow({
   const messagesRef = useRef(initialMessages);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
+  const [pendingQuestion, setPendingQuestion] = useState<{ runId: string; question: LocalQuestion; query?: string } | null>(null);
+  const [questionOpen, setQuestionOpen] = useState(false);
+  const [questionError, setQuestionError] = useState("");
+  const [toolsView, setToolsView] = useState<"media" | "activity" | null>(null);
+  const clarificationVersionRef = useRef(0);
   const bottomRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const streamFrameRef = useRef<number | null>(null);
@@ -156,7 +180,26 @@ export default function ChatWindow({
 
   useEffect(() => {
     setInput("");
+    setPendingQuestion(null);
+    setQuestionOpen(false);
+    setToolsView(null);
+    clarificationVersionRef.current += 1;
   }, [resetKey]);
+
+  useEffect(() => {
+    if (!localCapabilities?.enabled || !sessionId || !onResume || disabled) return;
+    let active = true;
+    const version = clarificationVersionRef.current;
+    api.localRuns().then((runs) => {
+      if (!active || version !== clarificationVersionRef.current) return;
+      const run = runs.find((item) => item.session_id === sessionId && item.status === "awaiting_input" && item.question);
+      if (run?.question) {
+        setPendingQuestion({ runId: run.id, question: run.question, query: run.query });
+        setQuestionOpen(true);
+      }
+    }).catch(() => {});
+    return () => { active = false; };
+  }, [localCapabilities?.enabled, sessionId, onResume, disabled, resetKey]);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
@@ -180,12 +223,15 @@ export default function ChatWindow({
     };
   }, []);
 
-  const send = async () => {
-    const text = input.trim();
-    if (!text || loading || disabled) return;
+  const send = async (prompt?: string, resumeRunId?: string) => {
+    const text = (prompt ?? input).trim();
+    if (!text || loading || activeControllerRef.current || disabled || (resumeRunId && !onResume)) return;
 
     setInput("");
     setLoading(true);
+    setQuestionOpen(false);
+    setQuestionError("");
+    clarificationVersionRef.current += 1;
     const controller = new AbortController();
     activeControllerRef.current = controller;
     abortReasonRef.current = null;
@@ -204,7 +250,17 @@ export default function ChatWindow({
           model: res.model,
           sql: res.sql,
           rows: res.rows,
+          media_job: res.media_job,
+          needs_clarification: res.needs_clarification,
+          run_id: res.run_id,
+          clarification: res.clarification,
         };
+
+        for (let i = 0; i < next.length; i++) {
+          if (next[i].needs_clarification && next[i].run_id === (resumeRunId || res.run_id)) {
+            next[i] = { ...next[i], needs_clarification: false };
+          }
+        }
 
         if (last?.role === "assistant" && !last.content.trim()) {
           next[next.length - 1] = message;
@@ -213,6 +269,14 @@ export default function ChatWindow({
 
         return [...next, message];
       });
+      if (!mountedRef.current) return;
+      if (res.needs_clarification && res.run_id && onResume) {
+        setPendingQuestion({ runId: res.run_id, question: res.clarification || { kind: "clarification", question: res.answer }, query: text });
+        setToolsView(null);
+        setQuestionOpen(true);
+      } else {
+        setPendingQuestion(null);
+      }
     };
 
     const removeStreamDraft = () => {
@@ -244,7 +308,7 @@ export default function ChatWindow({
     };
 
     try {
-      if (onStream) {
+      if (onStream && !resumeRunId) {
         const updateAssistantDraft = (nextContent: string) => {
           pendingStreamContentRef.current = nextContent;
           if (streamFrameRef.current !== null) return;
@@ -318,7 +382,7 @@ export default function ChatWindow({
       }
 
       setMessages((current) => [...current, { role: "user", content: text }]);
-      const res = await abortable(onSend(text, controller.signal), controller.signal);
+      const res = await abortable(resumeRunId ? onResume!(resumeRunId, text, controller.signal) : onSend(text, controller.signal), controller.signal);
       appendFinalAnswer(res);
     } catch (error) {
       clearStreamTimer();
@@ -352,6 +416,10 @@ export default function ChatWindow({
           content: error instanceof Error ? `Error: ${error.message}` : "Error: request failed.",
         },
       ]);
+      if (resumeRunId && mountedRef.current) {
+        setQuestionError(error instanceof Error ? error.message : "Could not continue the task.");
+        setQuestionOpen(true);
+      }
     } finally {
       clearStreamTimer();
       cancelStreamFrame();
@@ -383,6 +451,15 @@ export default function ChatWindow({
   };
 
   const showingStreamDraft = Boolean(onStream && loading && messages[messages.length - 1]?.role === "assistant");
+
+  const openRunQuestion = (run: LocalRun) => {
+    if (!run.question) return;
+    clarificationVersionRef.current += 1;
+    setToolsView(null);
+    setPendingQuestion({ runId: run.id, question: run.question, query: run.query });
+    setQuestionError("");
+    setQuestionOpen(true);
+  };
 
   return (
     <div className="flex h-full min-h-0 flex-col">
@@ -457,6 +534,12 @@ export default function ChatWindow({
                 )}
 
                 {renderExtra?.(msg)}
+                {msg.needs_clarification && (msg.run_id && onResume ? <button type="button" disabled={loading || disabled}
+                  onClick={() => openRunQuestion({ id: msg.run_id!, question: msg.clarification || { kind: "clarification", question: msg.content } } as LocalRun)}
+                  className="mt-3 inline-flex items-center gap-1.5 rounded-md border border-brand/25 bg-brand/10 px-3 py-2 text-xs font-medium text-brand-ink">
+                  <MessageCircleQuestion size={14} /> Answer question
+                </button> : <p className="mt-2 text-xs text-analytic">Reply with the details to continue this task.</p>)}
+                {msg.media_job && <LocalMediaCard initialJob={msg.media_job} />}
 
                 {msg.role === "assistant" && msg.content.trim() && (
                   <div className="mt-3 border-t border-line pt-2">
@@ -487,6 +570,14 @@ export default function ChatWindow({
       </div>
 
       <div className="border-t border-line-soft bg-soft/55 px-4 py-4 sm:px-6">
+        {localCapabilities?.enabled && <div className="mb-3 flex flex-wrap items-center gap-2">
+          <button type="button" disabled={loading || disabled} onClick={() => setToolsView("media")}
+            className="inline-flex items-center gap-1.5 rounded-md border border-line-soft bg-panel px-3 py-1.5 text-xs font-medium text-ink-subtle hover:border-brand/35 disabled:opacity-40"><WandSparkles size={14} /> Create media</button>
+          <button type="button" onClick={() => setToolsView("activity")}
+            className="inline-flex items-center gap-1.5 rounded-md border border-line-soft bg-panel px-3 py-1.5 text-xs font-medium text-ink-subtle hover:border-brand/35"><Activity size={14} /> Activity</button>
+          {pendingQuestion && !questionOpen && !loading && <button type="button" disabled={disabled} onClick={() => { setToolsView(null); setQuestionOpen(true); }}
+            className="inline-flex items-center gap-1.5 rounded-md border border-brand/25 bg-brand/10 px-3 py-1.5 text-xs font-medium text-brand-ink"><MessageCircleQuestion size={14} /> Answer pending question</button>}
+        </div>}
         <div className="app-panel flex items-end gap-3 rounded-md p-2">
           <textarea
             ref={inputRef}
@@ -517,7 +608,7 @@ export default function ChatWindow({
           ) : (
             <button
               type="button"
-              onClick={send}
+              onClick={() => void send()}
               disabled={disabled || !input.trim()}
               className="grid h-12 w-12 shrink-0 place-items-center rounded-md bg-brand text-white transition duration-150 hover:bg-brand-hover disabled:cursor-not-allowed disabled:bg-soft disabled:text-muted disabled:shadow-none"
               aria-label="Send message"
@@ -527,6 +618,18 @@ export default function ChatWindow({
           )}
         </div>
       </div>
+      {questionOpen && pendingQuestion && onResume && !loading && <ClarificationDialog
+        key={`${pendingQuestion.runId}:${pendingQuestion.question.question}`}
+        question={pendingQuestion.question} query={pendingQuestion.query} error={questionError}
+        onClose={() => setQuestionOpen(false)} onAnswer={(answer) => void send(answer, pendingQuestion.runId)} />}
+      {toolsView === "media" && localCapabilities?.enabled && <WorkspaceMediaDialog capabilities={localCapabilities}
+        onClose={() => setToolsView(null)} onCreate={(prompt) => { setToolsView(null); void send(prompt); }} />}
+      {toolsView === "activity" && localCapabilities?.enabled && sessionId && <WorkspaceActivityDialog sessionId={sessionId}
+        onClose={() => setToolsView(null)} onQuestion={openRunQuestion} onCancelled={(runId) => {
+          if (pendingQuestion?.runId === runId) { setPendingQuestion(null); setQuestionOpen(false); }
+          setMessages((current) => current.map((message) => message.run_id === runId && message.needs_clarification
+            ? { ...message, needs_clarification: false } : message));
+        }} />}
     </div>
   );
 }

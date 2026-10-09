@@ -118,6 +118,41 @@ class Settings:
     CHUNK_SIZE = int(os.getenv("CHUNK_SIZE", DEFAULT_CHUNK_SIZE))
     CHUNK_OVERLAP = int(os.getenv("CHUNK_OVERLAP", DEFAULT_CHUNK_OVERLAP))
     TOP_K = int(os.getenv("TOP_K", DEFAULT_TOP_K))
+    # Cloud providers keep the one-pass pipeline to limit extra inference calls.
+    RAG_AGENTIC_ENABLED = os.getenv("RAG_AGENTIC_ENABLED", "false" if IS_CLOUD_RUNTIME else "true").lower() == "true"
+    RAG_AGENTIC_MODELS = [model.strip() for model in os.getenv("RAG_AGENTIC_MODELS", MODEL_QWEN).split(",") if model.strip()]
+    RAG_AGENTIC_MAX_SEARCHES = int(os.getenv("RAG_AGENTIC_MAX_SEARCHES", "2"))
+    RAG_AGENTIC_MAX_MODEL_CALLS = int(os.getenv("RAG_AGENTIC_MAX_MODEL_CALLS", "4"))
+    RAG_AGENTIC_CONTEXT_TOKENS = int(os.getenv("RAG_AGENTIC_CONTEXT_TOKENS", "4096"))
+    # These workflows and their on-disk state are exclusively for a local app.
+    LOCAL_AGENT_ENABLED = os.getenv(
+        "LOCAL_AGENT_ENABLED", "false" if IS_CLOUD_RUNTIME or IS_PRODUCTION or APP_ENV == "test" else "true"
+    ).lower() == "true"
+    LOCAL_AGENT_MODEL = os.getenv("LOCAL_AGENT_MODEL", MODEL_QWEN).strip()
+    LOCAL_AGENT_CONTEXT_TOKENS = int(os.getenv("LOCAL_AGENT_CONTEXT_TOKENS", "4096"))
+    LOCAL_AGENT_MAX_MODEL_CALLS = int(os.getenv("LOCAL_AGENT_MAX_MODEL_CALLS", "6"))
+    LOCAL_AGENT_MAX_TOOL_CALLS = int(os.getenv("LOCAL_AGENT_MAX_TOOL_CALLS", "8"))
+    LOCAL_AGENT_MAX_ACTIVE_RUNS = int(os.getenv("LOCAL_AGENT_MAX_ACTIVE_RUNS", "4"))
+    LOCAL_AGENT_PATH = os.getenv("LOCAL_AGENT_PATH", "data/cache/local_agent")
+    LOCAL_MEDIA_PATH = os.getenv("LOCAL_MEDIA_PATH", "data/cache/local_media")
+    LOCAL_MEDIA_PYTHON = os.getenv("LOCAL_MEDIA_PYTHON", "").strip()
+    # Docker Desktop can delegate to the Windows CUDA environment. Empty uses
+    # native subprocess workers. This connection is never used in cloud/production.
+    LOCAL_MEDIA_WORKER_URL = os.getenv("LOCAL_MEDIA_WORKER_URL", "").strip().rstrip("/")
+    LOCAL_MEDIA_WORKER_TOKEN = os.getenv("LOCAL_MEDIA_WORKER_TOKEN", "").strip()
+    LOCAL_VIDEO_PYTHON = os.getenv("LOCAL_VIDEO_PYTHON", "").strip()
+    LOCAL_MEDIA_DEVICE = os.getenv("LOCAL_MEDIA_DEVICE", "cpu").strip().lower()
+    LOCAL_MEDIA_TIMEOUT_SECONDS = int(os.getenv("LOCAL_MEDIA_TIMEOUT_SECONDS", "1800"))
+    LOCAL_MEDIA_MAX_QUEUED = int(os.getenv("LOCAL_MEDIA_MAX_QUEUED", "4"))
+    LOCAL_MEDIA_MAX_STORAGE_MB = int(os.getenv("LOCAL_MEDIA_MAX_STORAGE_MB", "2048"))
+    LOCAL_IMAGE_MODEL_PATH = os.getenv("LOCAL_IMAGE_MODEL_PATH", "data/models/sd-turbo").strip()
+    LOCAL_VIDEO_MODEL_PATH = os.getenv(
+        "LOCAL_VIDEO_MODEL_PATH", "data/models/ltx-video/ltxv-2b-0.9.6-distilled-04-25.safetensors"
+    ).strip()
+    LOCAL_VIDEO_CONFIG_PATH = os.getenv("LOCAL_VIDEO_CONFIG_PATH", "data/models/ltx-video/config").strip()
+    LOCAL_VIDEO_TEXT_PATH = os.getenv("LOCAL_VIDEO_TEXT_PATH", "data/models/ltx-video/text").strip()
+    LOCAL_VIDEO_OFFLOAD_PATH = os.getenv("LOCAL_VIDEO_OFFLOAD_PATH", "data/cache/local_video_offload").strip()
+    LOCAL_MEDIA_MIN_AVAILABLE_RAM_MB = int(os.getenv("LOCAL_MEDIA_MIN_AVAILABLE_RAM_MB", "768"))
     INDEX_PATH = os.getenv(
         "INDEX_PATH",
         (

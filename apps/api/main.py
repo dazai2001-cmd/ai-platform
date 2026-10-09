@@ -21,6 +21,7 @@ from apps.api.routes.chat import chat_bp
 from apps.api.routes.career import career_bp
 from apps.api.routes.jobs import jobs_bp
 from apps.api.routes.auth import auth_bp
+from apps.api.routes.local import local_bp
 from services.auth.auth_service import auth_service
 from services.security.rate_limiter import configure_rate_limits
 from apps.api.request_limits import SizeLimitedRequest
@@ -165,7 +166,7 @@ def create_app(test_config: dict | None = None) -> Flask:
             return None
         return jsonify({"error": "login required"}), 401
 
-    for bp in [auth_bp, rag_bp, bi_bp, memory_bp, health_bp, chat_bp, career_bp, jobs_bp]:
+    for bp in [auth_bp, rag_bp, bi_bp, memory_bp, health_bp, chat_bp, career_bp, jobs_bp, local_bp]:
         app.register_blueprint(bp)
 
     configure_rate_limits(app)

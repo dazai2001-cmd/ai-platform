@@ -8,8 +8,14 @@ gunicorn==23.0.0
 requests==2.32.3
 
 # RAG / Embeddings
+langchain==1.2.10
+langchain-core==1.4.0
+langgraph==1.0.10
+langgraph-checkpoint==4.1.1
+langchain-ollama==1.1.0
 faiss-cpu==1.8.0.post1
 sentence-transformers==6.1.0
+transformers==5.19.0
 pymupdf==1.24.4
 beautifulsoup4==4.12.3
 python-docx==1.1.2
@@ -31,7 +37,7 @@ python-dotenv==1.0.1
 werkzeug==3.0.3
 numpy==1.26.4
 
-# CPU-only torch (stops CUDA being pulled in)
+# CPU-only torch; 2.8 also supports Transformers' accelerator probe on CPU hosts.
 --extra-index-url https://download.pytorch.org/whl/cpu
-torch==2.6.0+cpu; sys_platform == "linux" or sys_platform == "win32"
-torch==2.6.0; sys_platform == "darwin"
+torch==2.8.0+cpu; sys_platform == "linux" or sys_platform == "win32"
+torch==2.8.0; sys_platform == "darwin"

@@ -2,6 +2,7 @@
 
 FROM python:3.11-slim AS builder
 
+ARG LOCAL_WORKFLOWS_ENABLED=false
 ENV PIP_DISABLE_PIP_VERSION_CHECK=1 \
     PIP_NO_CACHE_DIR=1
 
@@ -14,9 +15,12 @@ RUN apt-get update \
 RUN python -m venv /opt/venv
 
 COPY requirements.txt ./
+COPY requirements-local-agent.txt ./
 RUN --mount=type=cache,target=/root/.cache/pip \
     /opt/venv/bin/pip install --upgrade pip \
     && /opt/venv/bin/pip install -r requirements.txt
+
+RUN if [ "$LOCAL_WORKFLOWS_ENABLED" = "true" ]; then /opt/venv/bin/pip install -r requirements-local-agent.txt; fi
 
 
 FROM python:3.11-slim AS runtime

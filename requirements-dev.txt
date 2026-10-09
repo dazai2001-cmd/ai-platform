@@ -1,3 +1,4 @@
 -r requirements.txt
+-r requirements-local-agent.txt
 pytest==8.3.3
 pytest-cov==7.1.0

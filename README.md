@@ -88,6 +88,8 @@ Monitor query volume, success rate, average and p95 latency, recent requests, an
 - Query router that classifies user requests and selects the appropriate agent
 - Configurable model mapping for different tasks
 - Local model execution through Ollama
+- Local Qwen orchestration through LangChain tools and LangGraph, with clarification popups, bounded context, and media creation inside Workspace ([setup and workflows](docs/local-workflows.md))
+- Local SD Turbo images and experimental LTX 2B distilled video previews in Workspace, with progress, cancellation and downloadable outputs
 - Cloud model execution through Gemini/OpenRouter
 - Incremental streaming through Ollama, Gemini, and OpenRouter for chat-style interaction
 
@@ -98,6 +100,7 @@ Monitor query volume, success rate, average and p95 latency, recent requests, an
 - Chunk documents and generate embeddings
 - Store vectors in FAISS with JSON metadata
 - Retrieve relevant chunks for grounded answers
+- Local LangChain / LangGraph retrieval with bounded retries, clarification, and verified source IDs ([flow and tests](docs/agentic-rag.md))
 - Save completed streamed turns in server memory and use recent conversation context for follow-up questions
 - Document library with previews, chunk counts, and delete functionality
 - Optional OCR support can be added with OCRmyPDF/Tesseract for scanned PDFs
@@ -143,7 +146,7 @@ Monitor query volume, success rate, average and p95 latency, recent requests, an
 
 - Light, Valorant-inspired red/teal design system with consistent panels, typography, and states
 - Responsive navigation and clearer loading, retry, offline/local-fallback, empty, and error feedback
-- Workspace and General chat modes with tool shortcuts, conversation sync, cancellation, and stream timeouts
+- Unified local Workspace for conversation, tools, and media, with popup clarification and task activity; hosted chat modes retain their existing behavior
 - Drag-and-drop CV import with extraction progress, metadata, editable text, and accessible controls
 
 ### Authentication
@@ -202,6 +205,7 @@ Monitor query volume, success rate, average and p95 latency, recent requests, an
 - Redis
 - FAISS
 - Sentence Transformers
+- LangChain typed tools and LangGraph checkpoints for local Workspace and RAG
 - PyMuPDF
 - BeautifulSoup
 - Requests
@@ -481,6 +485,11 @@ SECRET_KEY=change-me-in-production
 docker compose up --build
 ```
 
+For local Workspace image/video generation on Windows, start Ollama and Docker
+Desktop, then use `.\.venv\Scripts\python.exe scripts/start_local.py`. It starts
+the native media worker before Docker Compose. Setup, model paths and usage are
+in [local workflows](docs/local-workflows.md).
+
 Open the frontend:
 
 ```text
@@ -701,6 +710,55 @@ Run locally with:
 docker compose up --build
 ```
 
+### Local Workspace Agents and Media
+
+Local Workspace uses Qwen with LangChain typed tools and LangGraph checkpoints.
+It can route into document RAG, BI, memory, career tools and arithmetic, or select
+an installed image/video model. Missing scene preferences open a clarification
+popup; answering resumes the same task. Media creation, progress, cancellation,
+downloads and saved results stay inside Workspace. Local General chat is folded
+into Workspace.
+
+| Capability | Local model and limits |
+| --- | --- |
+| Image generation | SD Turbo on CPU; up to 262,144 pixels, including 512 × 512 |
+| Video generation | Experimental LTX-Video 2B 0.9.6 distilled on CUDA; silent 1–6 second previews at 25 fps, up to 704 × 512 pixels |
+
+For the Windows + Docker Compose setup, start **Ollama** and **Docker Desktop**,
+then run:
+
+```powershell
+.\.venv\Scripts\python.exe scripts/start_local.py
+```
+
+The launcher starts the Windows media worker and runs `docker compose up --build -d`.
+The Docker API connects to the native CPU/CUDA environments using an authenticated
+local host connection. Model weights stay on your laptop. The first run configures
+a private worker token in the ignored `.env`; LTX also prepares a reusable disk
+offload cache of about 3.6 GiB. This checkout keeps the video encoder and offload
+cache on D: to preserve space on C:. A fresh checkout needs its own model paths
+and downloaded weights; see [setup and workflows](docs/local-workflows.md).
+
+Open **Workspace → Create media → Video preview**, or describe the scene in chat.
+LTX rounds the frame count to `8n+1`, so a requested two-second preview contains
+57 frames and plays for 2.28 seconds at 25 fps. Video quality remains experimental;
+motion and geometry can be inconsistent.
+
+**Performance depends on what else is running on the laptop.** A real Docker →
+Windows GPU integration test on an RTX 3050 laptop with 4 GB VRAM and 16 GB RAM
+completed a new 704 × 512 beach preview in approximately 124 seconds, including
+Qwen planning, prompt encoding, generation and file transfer. This is a reference
+result, not a guaranteed runtime or a test of heavy multitasking. Browsers, games,
+other models and background work compete for RAM, GPU memory and disk bandwidth.
+Start with short 1–2 second previews. If available system RAM stays below the
+configured 768 MiB reserve for five seconds, the worker stops and reports the
+resource issue. Workspace waits to reload Qwen until video generation finishes.
+
+These task/media endpoints are enabled only in local development. Cloud and
+production runtimes disable them even when the local feature flag is set.
+The [video benchmark](docs/video-model-benchmark.md) records the LTX, CogVideoX,
+Wan and AnimateDiff comparisons and their limitations.
+
 ---
 
 ### Cloud Mode
@@ -912,9 +970,10 @@ Production should use shared Redis for rate limiting, secure cookies, an HTTPS
 
 ## Testing
 
-Run backend tests:
+Install the backend test dependencies and run the tests:
 
 ```bash
+python -m pip install -r requirements-dev.txt
 python -m pytest -q
 ```
 
@@ -950,6 +1009,8 @@ Current test coverage includes:
 - request, rate, upload, dataset, and tenant-storage limits
 - hardened BI SQL execution and bounded result handling
 - concurrent RAG persistence and deterministic retrieval evaluation
+- local tool routing, clarification/resume, bounded context, and cloud/production guards
+- authenticated Docker media bridging, queue admission, cancellation, and artifact ownership
 - privacy-conscious analytics and per-user isolation
 - chat loading, retries, streaming timeouts, API proxying, CV import, and auth UI behavior
 

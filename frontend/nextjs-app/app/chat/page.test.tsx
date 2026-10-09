@@ -19,6 +19,7 @@ const apiMocks = vi.hoisted(() => ({
   workspaceChat: vi.fn(),
   generalChat: vi.fn(),
   generalChatStream: vi.fn(),
+  localCapabilities: vi.fn(),
 }));
 
 vi.mock("@/lib/api", () => ({ api: apiMocks }));
@@ -38,6 +39,7 @@ vi.mock("@/components/chat/ChatWindow", () => ({
 describe("ChatPage conversation loading", () => {
   beforeEach(() => {
     Object.values(apiMocks).forEach((mock) => mock.mockReset());
+    apiMocks.localCapabilities.mockResolvedValue({ enabled: false });
     apiMocks.createChatConversation.mockImplementation((id: string, title: string) =>
       Promise.resolve({
         id,
@@ -90,5 +92,17 @@ describe("ChatPage conversation loading", () => {
 
     await waitFor(() => expect(apiMocks.createChatConversation).toHaveBeenCalledTimes(2));
     expect(apiMocks.createChatConversation.mock.calls[1][0]).toBe(apiMocks.createChatConversation.mock.calls[0][0]);
+  });
+
+  it("uses one Workspace experience locally without General or a separate media page", async () => {
+    apiMocks.localCapabilities.mockResolvedValue({ enabled: true });
+    apiMocks.chatConversations.mockResolvedValue([]);
+    render(<ChatPage />);
+    await screen.findByText(/Qwen brings the right tools/);
+    expect(screen.getByRole("heading", { name: "AI Workspace" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "General" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Workspace" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: /Studio/ })).not.toBeInTheDocument();
+    expect(apiMocks.generalChat).not.toHaveBeenCalled();
   });
 });

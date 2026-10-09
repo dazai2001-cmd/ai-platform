@@ -116,6 +116,65 @@ def test_brain_http_cancellation_closes_generator(client, monkeypatch):
     assert closed == [True]
 
 
+@pytest.mark.parametrize("streaming", [False, True])
+def test_brain_routes_run_agentic_retrieval_with_authenticated_owner(client, monkeypatch, streaming):
+    from agents import rag_agent as rag_module
+    from application.retrieval.retriever import Retriever
+    from core.config.settings import settings
+    from domain.rag import agentic_retrieval as workflow
+    from domain.rag import pipeline as pipeline_module
+    from domain.rag.pipeline import QAPipeline
+    from langchain_core.messages import AIMessage, ToolMessage
+
+    owner = _create_verified_session(client, f"agentic-{str(streaming).lower()}@example.com")
+    owner_id = owner["user"]["id"]
+    monkeypatch.setattr(settings, "RAG_AGENTIC_ENABLED", True)
+    retriever = Mock()
+    retriever.search.return_value = [
+        {"score": 0.1, "metadata": {"source": "handbook.md", "text": "Atlas launches on 15 September 2026.", "user_id": owner_id}},
+        {"score": 0.2, "metadata": {"source": "private.md", "text": "OTHER-USER-SECRET", "user_id": "other"}},
+    ]
+    retriever.format_context.side_effect = Retriever(None, None).format_context
+
+    class Planner:
+        def bind_tools(self, tools):
+            return self
+
+        def invoke(self, messages):
+            finished = isinstance(messages[-1], ToolMessage)
+            return AIMessage(content="", tool_calls=[{
+                "name": "finish_retrieval" if finished else "search_knowledge_base",
+                "args": {"answerable": True, "sources": ["handbook.md"]} if finished else {"query": "Atlas launch"},
+                "id": "finish" if finished else "search", "type": "tool_call",
+            }])
+
+    monkeypatch.setattr(workflow, "create_retrieval_model", lambda model: Planner())
+    answer = "Atlas launches on 15 September 2026 [handbook.md]."
+    generate = Mock(return_value=answer)
+    stream = Mock(return_value=iter([answer]))
+    monkeypatch.setattr(pipeline_module.ollama, "generate", generate)
+    monkeypatch.setattr(pipeline_module.ollama, "stream", stream)
+    monkeypatch.setattr(rag_module.rag_agent, "ensure_ready", Mock())
+    monkeypatch.setattr(rag_module.rag_agent, "pipeline", QAPipeline(retriever))
+    endpoint = "/api/rag/ask/stream" if streaming else "/api/rag/ask"
+    response = client.post(endpoint, headers=_bearer(owner["token"]), json={
+        "question": "When does Atlas launch?", "session_id": "agentic-route-session",
+    })
+    assert response.status_code == 200
+    retriever.search.assert_called_once_with("Atlas launch", user_id=owner_id)
+    rendered = response.get_data(as_text=True)
+    assert "15 September 2026" in rendered
+    assert "OTHER-USER-SECRET" not in rendered
+    used_prompt = (stream if streaming else generate).call_args.args[1]
+    assert "OTHER-USER-SECRET" not in used_prompt
+    if not streaming:
+        assert response.get_json()["agentic"]["searches"] == 1
+    saved = client.get("/api/memory/agentic-route-session", headers=_bearer(owner["token"])).get_json()
+    assert [(message["role"], message["content"]) for message in saved] == [
+        ("user", "When does Atlas launch?"), ("assistant", answer),
+    ]
+
+
 def test_career_endpoint_respects_users_selected_model(client, monkeypatch):
     from apps.api.routes import career as career_routes
 

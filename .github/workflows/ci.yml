@@ -49,6 +49,7 @@ jobs:
           cache-dependency-path: |
             requirements.txt
             requirements-dev.txt
+            requirements-local-agent.txt
 
       - name: Install system packages
         run: |
@@ -62,6 +63,10 @@ jobs:
 
       - name: Run backend tests
         env:
+          APP_ENV: "test"
+          AI_RUNTIME: "local"
+          LOCAL_AGENT_ENABLED: "false"
+          DATABASE_URL: ""
           DEBUG: "false"
           SECRET_KEY: ci-secret
           OLLAMA_BASE_URL: http://127.0.0.1:11434

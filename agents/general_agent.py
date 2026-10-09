@@ -46,6 +46,16 @@ User request:
 
 class GeneralAgent:
     def _prompt(self, query: str, session_id: str, model: str, user_id: str = "local") -> str:
+        from services.local_agent.state import enabled as local_enabled
+        if local_enabled() and not model.startswith(("gemini:", "openrouter:")):
+            from services.local_agent.context import context_for
+            from services.local_agent.state import LocalState
+            context = context_for(LocalState(), session_id, user_id)
+            prompt = _GENERAL_PROMPT.format(model=model, history=context,
+                facts="Included in the conversation context above.", query=query)
+            if len(prompt) > (settings.LOCAL_AGENT_CONTEXT_TOKENS - settings.LLM_MAX_TOKENS) * 3:
+                raise ValueError("This request exceeds the local model context. Split it into smaller requests.")
+            return prompt
         history = memory.to_llm_format(session_id, user_id=user_id)[-8:]
         history_text = "\n".join(f"{m.get('role', 'user')}: {m.get('content', '')}" for m in history)
         facts_text = memory.facts_text(user_id=user_id)

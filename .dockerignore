@@ -1,6 +1,7 @@
 # The API image is allow-listed to runtime Python packages and dependencies.
 *
 !requirements.txt
+!requirements-local-agent.txt
 !agents/
 !agents/**
 !application/
